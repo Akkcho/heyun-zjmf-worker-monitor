@@ -142,19 +142,29 @@ test('一键部署写入配置前等待新版管理接口就绪并隐藏布尔�
   assert.doesNotMatch(script, /if \(\$githubRepo\) \{ Post-Admin \$BaseUrl \$AdminToken/);
 });
 
-test('一键部署遇到 401 时改用当前网站密码而不是首次部署密码', () => {
+test('一键部署遇到 401 时跳过自动初始化且不再询问网站密码', () => {
   const script = readUtf8('deploy-one-click.ps1');
+  const waitFunction = script.match(/function Wait-AdminApiReady[\s\S]+?\r?\n}\r?\nfunction Get-WorkersDevUrl/)?.[0] ?? '';
 
   assert.match(script, /function Get-HttpStatusCode/);
-  assert.match(script, /if \(\$statusCode -eq 401\)/);
-  assert.match(script, /首次部署密码已经失效/);
-  assert.match(script, /请输入当前管理后台网站密码（不是首次部署密码/);
-  assert.match(script, /\$apiAdminToken = \[string\]\$adminReady\.Token/);
-  assert.match(script, /TokenChanged = \(\$Token -cne \$initialToken\)/);
+  assert.match(waitFunction, /if \(\$statusCode -eq 401\)/);
+  assert.match(waitFunction, /跳过自动初始化，不影响访问地址/);
+  assert.doesNotMatch(waitFunction, /Read-OptionalSecret|请输入.*网站密码/);
+  assert.doesNotMatch(script, /同步当前管理后台密码/);
+  assert.doesNotMatch(script, /TokenChanged/);
   assert.match(script, /\$first -ceq \$second/);
-  assert.match(script, /Seed-MonitorConfig \$workerUrl \$apiAdminToken \$Config/);
-  assert.match(script, /当前网站密码已同步到 Worker Secret 和本地配置/);
-  assert.doesNotMatch(script, /Seed-MonitorConfig \$workerUrl \$adminToken \$Config/);
+  assert.match(script, /Seed-MonitorConfig \$workerUrl \$adminToken \$Config/);
+});
+
+test('一键部署按默认 Worker 名称和 workers.dev 子域输出访问地址', () => {
+  const script = readUtf8('deploy-one-click.ps1');
+
+  assert.match(script, /\$workerName = Get-ConfigValue \$Config "workerName" "zjmf-monitor"/);
+  assert.match(script, /return "https:\/\/\$WorkerName\.\$subdomain\.workers\.dev"/);
+  assert.match(script, /\$workerUrl = Get-WorkersDevUrl \$workerName \$Config/);
+  assert.match(script, /状态页\s+: \$workerUrl\//);
+  assert.match(script, /管理后台\s+: \$workerUrl\/admin/);
+  assert.match(script, /状态 API\s+: \$workerUrl\/api\/status/);
 });
 
 test('D1 迁移遇到瞬时 fetch failed 时自动重试', () => {
