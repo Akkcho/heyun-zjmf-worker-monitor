@@ -540,12 +540,21 @@ test('初始化接口缺少必填项时返回具体缺失字段', async () => {
   assert.deepEqual(data.missing, ['provider.api_account', 'provider.api_password', 'server.remote_id']);
 });
 
-test('管理概览返回配置并仅隐藏 pushplus token 和服务器 IP', async () => {
+test('管理概览返回配置但不回显 IDC 密码', async () => {
+  const testEnv = env({
+    providers: [{
+      name: 'heyunidc',
+      display_name: '核云',
+      api_base_url: 'https://api.example/v1',
+      api_account: '28817567790',
+      api_password: 'provider-secret',
+    }],
+  });
   const res = await handleRequest(
     new Request('https://worker.example/api/admin/overview', {
       headers: { authorization: 'Bearer admin-password' },
     }),
-    env(),
+    testEnv,
   );
   const text = await res.text();
   const data = JSON.parse(text);
@@ -555,8 +564,32 @@ test('管理概览返回配置并仅隐藏 pushplus token 和服务器 IP', asyn
   assert.equal(data.settings.notify_token, '已配置');
   assert.equal(data.settings.notify_secret, '');
   assert.equal(data.settings.webhook_name, 'pushplus');
-  assert.equal(data.providers[0].api_password, 'provider-secret');
-  assert.doesNotMatch(text, /pushplus-secret|203\.0\.113\.10/);
+  assert.equal(data.providers[0].api_password, undefined);
+  assert.equal(data.providers[0].api_password_configured, true);
+  assert.equal(data.providers[0].api_account, '288******90');
+  assert.equal(data.providers[0].api_account_redacted, true);
+  assert.doesNotMatch(text, /pushplus-secret|203\.0\.113\.10|28817567790/);
+});
+
+test('测试魔方产品列表时可复用已有 IDC 密码，但不回传到概览', async () => {
+  const calls = [];
+  const testEnv = env({
+    fetcher: async (url) => {
+      calls.push(String(url));
+      if (String(url).includes('login_api')) return new Response(JSON.stringify({ jwt: 'jwt-1' }));
+      return new Response(JSON.stringify({ data: { host: [{ id: '4075', name: '主服务器', ip: '203.0.113.10', port: 996 }] } }));
+    },
+  });
+  const res = await handleRequest(new Request('https://worker.example/api/admin/zjmf/hosts', {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin-password', 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ name: 'heyunidc', api_base_url: 'https://api.example/v1', api_account: 'acct' }),
+  }), testEnv);
+  const data = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.match(calls[0], /login_api\?account=acct&password=provider-secret$/);
+  assert.equal(data.hosts[0].id, '4075');
 });
 
 test('管理概览返回数据保留和后台分析默认范围配置', async () => {
@@ -963,6 +996,38 @@ test('已有服务商保存时允许 API 密钥留空并保留旧密钥', async 
   );
 
   assert.equal(res.status, 200);
+  assert.equal(testEnv.DB.data.providerWrites[0].api_password, 'provider-secret');
+});
+
+test('已有服务商保存脱敏账号占位时保留原账号', async () => {
+  const testEnv = env({
+    providers: [{
+      name: 'heyunidc',
+      display_name: '核云',
+      api_base_url: 'https://api.example/v1',
+      api_account: '28817567790',
+      api_password: 'provider-secret',
+    }],
+  });
+  const res = await handleRequest(
+    new Request('https://worker.example/api/admin/providers', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer admin-password',
+        'content-type': 'application/json; charset=utf-8',
+      },
+      body: JSON.stringify({
+        name: 'heyunidc',
+        display_name: '核云',
+        api_base_url: 'https://api.example/v1',
+        api_account: '',
+      }),
+    }),
+    testEnv,
+  );
+
+  assert.equal(res.status, 200);
+  assert.equal(testEnv.DB.data.providerWrites[0].api_account, '28817567790');
   assert.equal(testEnv.DB.data.providerWrites[0].api_password, 'provider-secret');
 });
 

@@ -137,7 +137,7 @@ test('管理后台页面使用 ZJMF_ADMIN_TOKEN 登录且不嵌入真实密码',
   assert.match(html, /function autoFillHttpUrl/);
   assert.match(html, /autoFillHttpUrl\(form\)/);
   assert.match(html, /autoFillHttpUrl\(\$\('serverForm'\)\)/);
-  assert.match(html, /name="api_password" type="text"/);
+  assert.match(html, /name="api_password" type="password"/);
   assert.match(html, /id="editModal"/);
   assert.match(html, /id="serverProviderSelect"/);
   assert.match(html, /name="remote_id"/);
@@ -146,6 +146,11 @@ test('管理后台页面使用 ZJMF_ADMIN_TOKEN 登录且不嵌入真实密码',
   assert.match(html, /id="providerSelect"/);
   assert.match(html, /id="newProviderBtn"/);
   assert.match(html, /id="testProviderBtn"/);
+  assert.match(html, /id="providerTestResult"/);
+  assert.match(html, /id="quickProviderTestResult"/);
+  assert.match(html, /function maskAccount/);
+  assert.match(html, /function runProviderConnectionTest/);
+  assert.doesNotMatch(html, /task\('测试 IDC 连接'/);
   const editModalStart = html.indexOf('id="editModal"');
   const editModal = html.slice(editModalStart, html.indexOf('</section>', editModalStart));
   assert.doesNotMatch(editModal, /daily_reboot_limit/);
@@ -164,7 +169,7 @@ test('管理后台页面使用 ZJMF_ADMIN_TOKEN 登录且不嵌入真实密码',
   assert.match(html, /const scrub=/);
   assert.match(html, /background-size:50px 50px/);
   assert.match(html, /--bg:#f5f7fb/);
-  assert.match(html, /管理后台登录后会显示/);
+  assert.match(html, /已有 IDC 留空则保留原密钥/);
   assert.doesNotMatch(html, /1 密码.*2 魔方财务.*3 监控参数.*4 通知渠道/);
   assert.match(html, /old_password/);
   assert.match(html, /localStorage\.getItem\('zjmf_admin_token'\)/);

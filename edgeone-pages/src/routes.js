@@ -108,6 +108,34 @@ function adminServer(server) {
   return { ...rest, name: serverDisplayName(server) };
 }
 
+function maskAccount(value) {
+  const account = String(value || '');
+  if (account.length <= 2) return '*'.repeat(account.length);
+  if (account.length <= 5) return `${account.slice(0, 1)}${'*'.repeat(account.length - 2)}${account.slice(-1)}`;
+  return `${account.slice(0, 3)}${'*'.repeat(account.length - 5)}${account.slice(-2)}`;
+}
+
+function isRedactedAccount(value) {
+  return String(value || '').includes('*');
+}
+
+function adminProvider(provider) {
+  const {
+    api_account: apiAccount,
+    api_password: apiPassword,
+    jwt_token: _jwtToken,
+    jwt_expire_at: _jwtExpireAt,
+    ...rest
+  } = provider;
+  return {
+    ...rest,
+    api_account: maskAccount(apiAccount),
+    api_account_configured: Boolean(apiAccount),
+    api_account_redacted: Boolean(apiAccount),
+    api_password_configured: Boolean(apiPassword),
+  };
+}
+
 function publicEvent(event) {
   const { id, old_state, new_state, label, level, created_at } = event;
   return { id, old_state, new_state, label, level, created_at };
@@ -288,7 +316,7 @@ export async function handleRequest(request, env) {
         notify_token: settings.notify_token || settings.pushplus_token ? '已配置' : '',
         notify_secret: settings.notify_secret ? '已配置' : '',
       },
-      providers: await repo.listProviders(),
+      providers: (await repo.listProviders()).map(adminProvider),
       groups: await repo.listGroups(),
       servers: adminServers(await repo.listServers(), status),
       status,
@@ -308,13 +336,20 @@ export async function handleRequest(request, env) {
 
   if (url.pathname === '/api/admin/zjmf/hosts' && request.method === 'POST') {
     const body = await readJson(request);
-    if (!body?.api_base_url || !body?.api_account || !body?.api_password) {
+    const existing = body?.name ? await repo.getProvider(String(body.name)) : null;
+    const apiBaseUrl = body?.api_base_url || existing?.api_base_url;
+    const apiAccount = body?.api_account && !isRedactedAccount(body.api_account)
+      ? body.api_account
+      : existing?.api_account;
+    const apiPassword = body?.api_password || existing?.api_password;
+    if (!apiBaseUrl || !apiAccount || !apiPassword) {
       return json({ error: 'INVALID_PROVIDER' }, 400);
     }
     const client = new ZjmfClient({
-      api_base_url: normalizeApiBaseUrl(body.api_base_url),
-      api_account: body.api_account,
-      api_password: body.api_password,
+      ...existing,
+      api_base_url: normalizeApiBaseUrl(apiBaseUrl),
+      api_account: apiAccount,
+      api_password: apiPassword,
     }, env.fetcher || ((input, init) => fetch(input, init)));
     const hosts = await client.getHosts(Math.floor(Date.now() / 1000));
     if (!hosts) return json({ error: client.lastError || 'HOSTS_FETCH_FAILED' }, 502);
@@ -537,13 +572,16 @@ export async function handleRequest(request, env) {
 
   if (url.pathname === '/api/admin/providers' && request.method === 'POST') {
     const body = await readJson(request);
-    if (!body?.name || !body?.api_base_url || !body?.api_account) {
+    const existing = body?.name ? await repo.getProvider(body.name) : null;
+    const apiAccount = body?.api_account && !isRedactedAccount(body.api_account)
+      ? body.api_account
+      : existing?.api_account || '';
+    if (!body?.name || !body?.api_base_url || !apiAccount) {
       return json({ error: 'INVALID_PROVIDER' }, 400);
     }
-    const existing = await repo.getProvider(body.name);
     const apiPassword = body.api_password || existing?.api_password || '';
     if (!apiPassword) return json({ error: 'INVALID_PROVIDER' }, 400);
-    await repo.upsertProvider({ ...body, display_name: body.display_name || body.name, api_base_url: normalizeApiBaseUrl(body.api_base_url), api_password: apiPassword }, Math.floor(Date.now() / 1000));
+    await repo.upsertProvider({ ...body, display_name: body.display_name || body.name, api_base_url: normalizeApiBaseUrl(body.api_base_url), api_account: apiAccount, api_password: apiPassword }, Math.floor(Date.now() / 1000));
     return json({ ok: true });
   }
 

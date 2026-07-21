@@ -27,6 +27,9 @@ test('EdgeOne handler 渲染初始化页', async () => {
 
   assert.equal(res.status, 200);
   assert.match(html, /首次配置|管理面板/);
+  assert.match(html, /id="providerTestResult"/);
+  assert.match(html, /function runProviderConnectionTest/);
+  assert.doesNotMatch(html, /task\('测试 IDC 连接'/);
 });
 
 test('EdgeOne handler 使用 KV 管理接口', async () => {
@@ -77,11 +80,71 @@ test('EdgeOne handler 支持全局 KV 绑定变量', async () => {
   }
 });
 
+test('EdgeOne 管理概览不回显 IDC 密码', async () => {
+  const kv = new MemoryKV();
+  const env = { ADMIN_TOKEN: 'admin', ZJMF_KV: kv };
+  await handleEdgeOneRequest(new Request('https://edgeone.example/api/admin/providers', {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin', 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      name: 'heyunidc',
+      display_name: '核云',
+      api_base_url: 'https://api.example/v1',
+      api_account: '28817567790',
+      api_password: 'secret',
+    }),
+  }), env);
+  const overview = await handleEdgeOneRequest(new Request('https://edgeone.example/api/admin/overview', {
+    headers: { authorization: 'Bearer admin' },
+  }), env);
+  const data = await overview.json();
+
+  assert.equal(data.providers[0].api_password, undefined);
+  assert.equal(data.providers[0].api_password_configured, true);
+  assert.equal(data.providers[0].api_account, '288******90');
+  assert.equal(data.providers[0].api_account_redacted, true);
+});
+
 test('EdgeOne TCP 连接器不依赖 Node 原生模块', async () => {
   await assert.rejects(
     () => edgeOneTcpConnector('127.0.0.1', 996, 1000),
     /EdgeOne Pages 暂不支持 TCP 原生端口探测/,
   );
+});
+
+test('EdgeOne 测试产品列表时可复用已有 IDC 密码，但不回显到概览', async () => {
+  const calls = [];
+  const kv = new MemoryKV();
+  const env = {
+    ADMIN_TOKEN: 'admin',
+    ZJMF_KV: kv,
+    fetcher: async (url) => {
+      calls.push(String(url));
+      if (String(url).includes('login_api')) return new Response(JSON.stringify({ jwt: 'jwt-1' }));
+      return new Response(JSON.stringify({ data: { host: [{ id: '4075', name: '主服务器', ip: '203.0.113.10', port: 996 }] } }));
+    },
+  };
+  await handleEdgeOneRequest(new Request('https://edgeone.example/api/admin/providers', {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin', 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      name: 'heyunidc',
+      display_name: '核云',
+      api_base_url: 'https://api.example/v1',
+      api_account: 'acct',
+      api_password: 'secret',
+    }),
+  }), env);
+  const res = await handleEdgeOneRequest(new Request('https://edgeone.example/api/admin/zjmf/hosts', {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin', 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ name: 'heyunidc', api_base_url: 'https://api.example/v1', api_account: 'acct' }),
+  }), env);
+  const data = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.match(calls[0], /login_api\?account=acct&password=secret$/);
+  assert.equal(data.hosts[0].id, '4075');
 });
 
 test('Edge Function 入口支持全局 KV 绑定', async () => {
