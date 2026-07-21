@@ -23,6 +23,26 @@ test('步骤2批处理统一使用 CRLF，避免 cmd 将后半段当成命令', 
   assertCrLfBatch('步骤2-一键部署.bat');
 });
 
+test('步骤2只使用 PowerShell 7，并在缺失时尝试自动安装', () => {
+  const deployer = readUtf8('步骤2-一键部署.bat');
+
+  assert.match(deployer, /where pwsh/);
+  assert.match(deployer, /winget install -e --id Microsoft\.PowerShell/);
+  assert.match(deployer, /需要 PowerShell 7/);
+  assert.doesNotMatch(deployer, /set "PS_EXE=powershell"/i);
+});
+
+test('PowerShell 部署脚本启动后再解析脚本目录和默认缓存目录', () => {
+  const script = readUtf8('deploy-one-click.ps1');
+
+  assert.match(script, /\[string\]\$CacheRoot = ""/);
+  assert.match(script, /\$PSVersionTable\.PSVersion\.Major -lt 7/);
+  assert.match(script, /\$MyInvocation\.MyCommand\.Path/);
+  assert.match(script, /\$CacheRoot = Join-Path \$Root "\.cache\\heyun-zjmf-worker-monitor"/);
+  assert.doesNotMatch(script, /Join-Path \$PSScriptRoot/);
+  assert.doesNotMatch(script, /GetFullPath\(\$PSScriptRoot\)/);
+});
+
 test('步骤1脚本写明 GitHub 仓库地址并复用为下载源', () => {
   const wrapperBytes = readFileSync(path.join(localScriptDir, '步骤1-一键安装脚本.bat'));
   const wrapperLatin1 = wrapperBytes.toString('binary');

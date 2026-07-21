@@ -5,7 +5,7 @@ param(
     [string]$UpstreamRepo = "loqwe/heyun-zjmf-worker-monitor",
     [string]$UpstreamRef = "main",
     [string]$WranglerVersion = "4.91.0",
-    [string]$CacheRoot = (Join-Path $PSScriptRoot ".cache\heyun-zjmf-worker-monitor"),
+    [string]$CacheRoot = "",
     [switch]$RefreshSource,
     [switch]$PreflightOnly,
     [switch]$PrepareOnly,
@@ -13,13 +13,32 @@ param(
     [switch]$Interactive
 )
 
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    Write-Host "部署已中断: 需要 PowerShell 7 或更高版本，请安装后使用 pwsh 重新运行。" -ForegroundColor Red
+    exit 1
+}
+
+$ScriptPath = $MyInvocation.MyCommand.Path
+if ([string]::IsNullOrWhiteSpace($ScriptPath)) {
+    Write-Host "部署已中断: 无法确定 deploy-one-click.ps1 所在目录，请通过 pwsh -File 和完整脚本路径运行。" -ForegroundColor Red
+    exit 1
+}
+$ScriptDirectory = Split-Path -Parent $ScriptPath
+if ([string]::IsNullOrWhiteSpace($ScriptDirectory)) {
+    Write-Host "部署已中断: 无法解析 deploy-one-click.ps1 所在目录，请重新下载部署文件。" -ForegroundColor Red
+    exit 1
+}
+$Root = [System.IO.Path]::GetFullPath($ScriptDirectory)
+if ([string]::IsNullOrWhiteSpace($CacheRoot)) {
+    $CacheRoot = Join-Path $Root ".cache\heyun-zjmf-worker-monitor"
+}
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$Root = [System.IO.Path]::GetFullPath($PSScriptRoot)
 $Npx = if (Get-Command "npx.cmd" -ErrorAction SilentlyContinue) { "npx.cmd" } else { "npx" }
 $WranglerPackage = "wrangler@$WranglerVersion"
 

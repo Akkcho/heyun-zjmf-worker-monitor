@@ -13,15 +13,18 @@ set "PS1_URL=%REMOTE_BASE%/deploy-one-click.ps1"
 set "EXAMPLE_URL=%REMOTE_BASE%/one-click.config.example.jsonc"
 
 set "PS_EXE="
-where pwsh >nul 2>nul
-if not errorlevel 1 set "PS_EXE=pwsh"
+call :detect_pwsh
 if defined PS_EXE goto after_detect_powershell
-where powershell >nul 2>nul
-if not errorlevel 1 set "PS_EXE=powershell"
+
+echo [提示] 未找到 PowerShell 7，正在尝试通过 winget 自动安装。
+call :install_powershell_7
+call :detect_pwsh
 :after_detect_powershell
 
 if not defined PS_EXE (
-  echo [ERROR] 未找到 PowerShell，请先运行 步骤1-一键安装.bat。
+  echo [ERROR] 需要 PowerShell 7，但自动安装未成功。
+  echo 请先安装 PowerShell 7 后重新运行本脚本：
+  echo https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows
   pause
   exit /b 1
 )
@@ -89,6 +92,21 @@ exit /b 1
 echo [ERROR] 无法创建 one-click.config.jsonc，请检查目录写入权限。
 pause
 exit /b 1
+
+:detect_pwsh
+set "PS_EXE="
+where pwsh >nul 2>nul
+if not errorlevel 1 set "PS_EXE=pwsh"
+if defined PS_EXE exit /b 0
+if exist "%ProgramFiles%\PowerShell\7\pwsh.exe" set "PS_EXE=%ProgramFiles%\PowerShell\7\pwsh.exe"
+exit /b 0
+
+:install_powershell_7
+where winget >nul 2>nul
+if errorlevel 1 exit /b 1
+winget install -e --id Microsoft.PowerShell --source winget --silent --accept-package-agreements --accept-source-agreements
+set "PATH=%ProgramFiles%\PowerShell\7;%PATH%"
+exit /b 0
 
 :fetch
 echo 下载/更新：%~3
