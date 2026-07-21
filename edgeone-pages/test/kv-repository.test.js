@@ -58,3 +58,34 @@ test('KVRepository 生成状态页所需历史和事件', async () => {
   ]);
   assert.equal(events.get('1001')[0].label, '检测异常');
 });
+
+test('KVRepository 兼容没有分组字段的旧数据', async () => {
+  const kv = new MemoryKV();
+  await kv.put('zjmf_monitor_state', JSON.stringify({
+    servers: [{ id: '1001', name: '旧服务器', provider: 'heyunidc' }],
+  }));
+  const repo = new KVRepository(kv);
+
+  assert.deepEqual(await repo.listGroups(), []);
+  assert.equal((await repo.listServers())[0].group_id, '');
+  assert.equal((await repo.listServers())[0].sort_order, 0);
+});
+
+test('KVRepository 保存分组、批量移动和分组顺序', async () => {
+  const repo = new KVRepository(new MemoryKV());
+  await repo.upsertServer({ id: '1001', name: '服务器 1', provider: 'heyunidc' }, 100);
+  await repo.upsertServer({ id: '1002', name: '服务器 2', provider: 'heyunidc' }, 100);
+  await repo.upsertGroup({ id: 'group-a', name: 'A', sort_order: 0 }, 100);
+  await repo.upsertGroup({ id: 'group-b', name: 'B', sort_order: 1 }, 100);
+  await repo.assignServersToGroup(['1001', '1002'], 'group-b', 4, 101);
+  await repo.reorderGroups(['group-b', 'group-a'], 102);
+
+  assert.deepEqual((await repo.listServers()).map(({ group_id, sort_order }) => ({ group_id, sort_order })), [
+    { group_id: 'group-b', sort_order: 4 },
+    { group_id: 'group-b', sort_order: 5 },
+  ]);
+  assert.deepEqual((await repo.listGroups()).map(({ id, sort_order }) => ({ id, sort_order })), [
+    { id: 'group-b', sort_order: 0 },
+    { id: 'group-a', sort_order: 1 },
+  ]);
+});

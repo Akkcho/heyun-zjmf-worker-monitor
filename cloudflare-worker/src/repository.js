@@ -17,7 +17,14 @@ function rowToBool(row, key, fallback = false) {
 }
 
 function serverRow(row) {
-  return { ...row, remote_id: row.remote_id || row.id, enabled: rowToBool(row, 'enabled'), visible_on_status: rowToBool(row, 'visible_on_status', true) };
+  return {
+    ...row,
+    remote_id: row.remote_id || row.id,
+    group_id: row.group_id || '',
+    sort_order: numberSetting(row.sort_order, 0),
+    enabled: rowToBool(row, 'enabled'),
+    visible_on_status: rowToBool(row, 'visible_on_status', true),
+  };
 }
 
 function placeholders(values, start = 1) {
@@ -136,6 +143,15 @@ export class D1Repository {
     return (results || []).map(serverRow);
   }
 
+  async listGroups() {
+    const { results } = await this.db.prepare('SELECT * FROM monitor_groups ORDER BY sort_order, name COLLATE NOCASE').all();
+    return (results || []).map((group) => ({ ...group, sort_order: numberSetting(group.sort_order, 0) }));
+  }
+
+  async getGroup(id) {
+    return await this.db.prepare('SELECT * FROM monitor_groups WHERE id = ?1').bind(id).first();
+  }
+
   async getServer(id) {
     const row = await this.db.prepare('SELECT * FROM servers WHERE id = ?1').bind(id).first();
     return row ? serverRow(row) : null;
@@ -219,7 +235,7 @@ export class D1Repository {
 
   async listStatus() {
     const { results } = await this.db.prepare(`
-      SELECT s.id, s.remote_id, s.name, s.ip, s.provider, s.enabled, s.visible_on_status, s.check_method, s.http_url, s.tcp_host, s.tcp_port,
+      SELECT s.id, s.remote_id, s.name, s.ip, s.provider, s.enabled, s.visible_on_status, s.check_method, s.http_url, s.tcp_host, s.tcp_port, s.group_id, s.sort_order,
              r.state, r.last_status_value, r.last_check_time, r.last_reboot_time, r.reboot_count_today,
              cr.latency_ms AS last_latency_ms
       FROM servers s
@@ -320,10 +336,47 @@ export class D1Repository {
 
   async upsertServer(server, now) {
     await this.db.prepare(`
-      INSERT INTO servers (id,remote_id,name,ip,provider,check_method,enabled,visible_on_status,daily_reboot_limit,scheduled_reboot,http_url,http_method,http_expected_status,tcp_host,tcp_port,probe_timeout_ms,recovery_action,created_at,updated_at)
-      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18)
-      ON CONFLICT(id) DO UPDATE SET remote_id=excluded.remote_id,name=excluded.name,ip=excluded.ip,provider=excluded.provider,check_method=excluded.check_method,enabled=excluded.enabled,visible_on_status=excluded.visible_on_status,daily_reboot_limit=excluded.daily_reboot_limit,scheduled_reboot=excluded.scheduled_reboot,http_url=excluded.http_url,http_method=excluded.http_method,http_expected_status=excluded.http_expected_status,tcp_host=excluded.tcp_host,tcp_port=excluded.tcp_port,probe_timeout_ms=excluded.probe_timeout_ms,recovery_action=excluded.recovery_action,updated_at=excluded.updated_at
-    `).bind(server.id, server.remote_id || server.id, server.name, server.ip || '', server.provider, server.check_method || 'service_then_power', server.enabled === false ? 0 : 1, boolSetting(server.visible_on_status, true) ? 1 : 0, server.daily_reboot_limit || 0, '', server.http_url || '', server.http_method || 'GET', server.http_expected_status || '200-399', server.tcp_host || '', Number(server.tcp_port || 0), Number(server.probe_timeout_ms || 10000), server.recovery_action || 'reboot', now).run();
+      INSERT INTO servers (id,remote_id,name,ip,provider,check_method,enabled,visible_on_status,daily_reboot_limit,scheduled_reboot,http_url,http_method,http_expected_status,tcp_host,tcp_port,probe_timeout_ms,recovery_action,created_at,updated_at,group_id,sort_order)
+      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18,?19,?20)
+      ON CONFLICT(id) DO UPDATE SET remote_id=excluded.remote_id,name=excluded.name,ip=excluded.ip,provider=excluded.provider,check_method=excluded.check_method,enabled=excluded.enabled,visible_on_status=excluded.visible_on_status,daily_reboot_limit=excluded.daily_reboot_limit,scheduled_reboot=excluded.scheduled_reboot,http_url=excluded.http_url,http_method=excluded.http_method,http_expected_status=excluded.http_expected_status,tcp_host=excluded.tcp_host,tcp_port=excluded.tcp_port,probe_timeout_ms=excluded.probe_timeout_ms,recovery_action=excluded.recovery_action,group_id=excluded.group_id,sort_order=excluded.sort_order,updated_at=excluded.updated_at
+    `).bind(server.id, server.remote_id || server.id, server.name, server.ip || '', server.provider, server.check_method || 'service_then_power', server.enabled === false ? 0 : 1, boolSetting(server.visible_on_status, true) ? 1 : 0, server.daily_reboot_limit || 0, '', server.http_url || '', server.http_method || 'GET', server.http_expected_status || '200-399', server.tcp_host || '', Number(server.tcp_port || 0), Number(server.probe_timeout_ms || 10000), server.recovery_action || 'reboot', now, server.group_id || '', numberSetting(server.sort_order, 0)).run();
+  }
+
+  async upsertGroup(group, now) {
+    await this.db.prepare(`
+      INSERT INTO monitor_groups (id,name,sort_order,created_at,updated_at)
+      VALUES (?1,?2,?3,?4,?4)
+      ON CONFLICT(id) DO UPDATE SET name=excluded.name,sort_order=excluded.sort_order,updated_at=excluded.updated_at
+    `).bind(group.id, group.name, numberSetting(group.sort_order, 0), now).run();
+  }
+
+  async reorderGroups(groupIds, now) {
+    for (const [sortOrder, id] of groupIds.entries()) {
+      await this.db.prepare('UPDATE monitor_groups SET sort_order = ?1, updated_at = ?2 WHERE id = ?3')
+        .bind(sortOrder, now, id)
+        .run();
+    }
+  }
+
+  async assignServersToGroup(serverIds, groupId, sortOrder, now) {
+    for (const [index, id] of serverIds.entries()) {
+      if (sortOrder == null) {
+        await this.db.prepare('UPDATE servers SET group_id = ?1, updated_at = ?2 WHERE id = ?3')
+          .bind(groupId, now, id)
+          .run();
+      } else {
+        await this.db.prepare('UPDATE servers SET group_id = ?1, sort_order = ?2, updated_at = ?3 WHERE id = ?4')
+          .bind(groupId, sortOrder + index, now, id)
+          .run();
+      }
+    }
+  }
+
+  async deleteGroup(id, now) {
+    await this.db.prepare("UPDATE servers SET group_id = '', sort_order = 0, updated_at = ?1 WHERE group_id = ?2")
+      .bind(now, id)
+      .run();
+    await this.db.prepare('DELETE FROM monitor_groups WHERE id = ?1').bind(id).run();
   }
 
   async deleteServer(id) {
@@ -336,6 +389,7 @@ export class D1Repository {
     await this.db.prepare('DELETE FROM events').run();
     await this.db.prepare('DELETE FROM runtimes').run();
     await this.db.prepare('DELETE FROM servers').run();
+    await this.db.prepare('DELETE FROM monitor_groups').run();
     await this.db.prepare('DELETE FROM providers').run();
     await this.db.prepare('DELETE FROM settings WHERE key != ?1').bind('admin_token_hash').run();
   }

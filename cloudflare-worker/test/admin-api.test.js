@@ -2,11 +2,27 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 
+import { D1Repository } from '../src/repository.js';
 import { handleRequest } from '../src/routes.js';
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
+
+test('D1 状态查询包含状态页分组所需字段', async () => {
+  let sql = '';
+  const repo = new D1Repository({
+    prepare(statement) {
+      sql = statement;
+      return { all: async () => ({ results: [] }) };
+    },
+  });
+
+  await repo.listStatus();
+
+  assert.match(sql, /s\.group_id/);
+  assert.match(sql, /s\.sort_order/);
+});
 
 class FakeStatement {
   constructor(data, sql) {
@@ -36,6 +52,7 @@ class FakeStatement {
         })),
       };
     }
+    if (this.sql.includes('FROM monitor_groups ORDER BY sort_order')) return { results: this.data.groups };
     if (this.sql.includes('SELECT * FROM servers ORDER BY id')) return { results: this.data.servers };
     if (this.sql.includes('FROM servers s')) return { results: this.data.status };
     if (this.sql.includes('ORDER BY created_at DESC, id DESC')) return { results: this.data.recentChecks };
@@ -55,6 +72,9 @@ class FakeStatement {
     }
     if (this.sql.includes('SELECT * FROM servers WHERE id')) {
       return this.data.servers.find((server) => server.id === this.args[0]) || null;
+    }
+    if (this.sql.includes('SELECT * FROM monitor_groups WHERE id')) {
+      return this.data.groups.find((group) => group.id === this.args[0]) || null;
     }
     throw new Error(`Unexpected SQL: ${this.sql}`);
   }
@@ -85,7 +105,47 @@ class FakeStatement {
         scheduled_reboot: this.args[9],
         http_url: this.args[10],
         tcp_port: this.args[14],
+        group_id: this.args[18],
+        sort_order: this.args[19],
       });
+      return {};
+    }
+    if (this.sql.includes('INSERT INTO monitor_groups')) {
+      const group = {
+        id: this.args[0],
+        name: this.args[1],
+        sort_order: this.args[2],
+        created_at: this.args[3],
+        updated_at: this.args[3],
+      };
+      const index = this.data.groups.findIndex((item) => item.id === group.id);
+      if (index >= 0) this.data.groups[index] = { ...this.data.groups[index], ...group };
+      else this.data.groups.push(group);
+      return {};
+    }
+    if (this.sql.includes('UPDATE monitor_groups SET sort_order')) {
+      const group = this.data.groups.find((item) => item.id === this.args[2]);
+      if (group) group.sort_order = this.args[0];
+      return {};
+    }
+    if (this.sql.includes('UPDATE servers SET group_id = ?1, sort_order = ?2')) {
+      const server = this.data.servers.find((item) => item.id === this.args[3]);
+      if (server) Object.assign(server, { group_id: this.args[0], sort_order: this.args[1] });
+      return {};
+    }
+    if (this.sql.includes('UPDATE servers SET group_id = ?1')) {
+      const server = this.data.servers.find((item) => item.id === this.args[2]);
+      if (server) server.group_id = this.args[0];
+      return {};
+    }
+    if (this.sql.includes("UPDATE servers SET group_id = '', sort_order = 0")) {
+      for (const server of this.data.servers) {
+        if (server.group_id === this.args[1]) Object.assign(server, { group_id: '', sort_order: 0 });
+      }
+      return {};
+    }
+    if (this.sql.includes('DELETE FROM monitor_groups WHERE id')) {
+      this.data.groups = this.data.groups.filter((group) => group.id !== this.args[0]);
       return {};
     }
     if (this.sql.includes('INSERT INTO events')) {
@@ -117,6 +177,10 @@ class FakeStatement {
     }
     if (sql === 'DELETE FROM providers') {
       this.data.providers = [];
+      return {};
+    }
+    if (sql === 'DELETE FROM monitor_groups') {
+      this.data.groups = [];
       return {};
     }
     if (sql === 'DELETE FROM settings WHERE key != ?1') {
@@ -183,6 +247,7 @@ function env(overrides = {}) {
       deletedTables: [],
       deletedRuntimes: [],
       deletedServers: [],
+      groups: overrides.groups || [],
       servers: overrides.servers || [{ id: '8564', name: '主服务器', ip: '203.0.113.10', provider: 'heyunidc', enabled: 1 }],
       status: Object.hasOwn(overrides, 'status') ? overrides.status : [{
         id: '8564',
@@ -784,6 +849,85 @@ test('管理概览附带最近事件，后台无需额外首屏请求日志', as
   const data = await res.json();
 
   assert.equal(data.events[0].label, '确认宕机');
+});
+
+test('管理后台可以创建分组并在概览返回', async () => {
+  const testEnv = env();
+  const createRes = await handleRequest(new Request('https://worker.example/api/admin/groups', {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin-password', 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ name: '生产环境' }),
+  }), testEnv);
+  const created = await createRes.json();
+  const overviewRes = await handleRequest(new Request('https://worker.example/api/admin/overview', {
+    headers: { authorization: 'Bearer admin-password' },
+  }), testEnv);
+  const overview = await overviewRes.json();
+
+  assert.equal(createRes.status, 200);
+  assert.equal(created.group.name, '生产环境');
+  assert.deepEqual(overview.groups.map(({ id, name, sort_order }) => ({ id, name, sort_order })), [
+    { id: created.group.id, name: '生产环境', sort_order: 0 },
+  ]);
+});
+
+test('管理后台可以把多个监控项批量移动到目标分组', async () => {
+  const testEnv = env({
+    groups: [{ id: 'group-prod', name: '生产环境', sort_order: 0 }],
+    servers: [
+      { id: '8564', name: '主服务器', provider: 'heyunidc', enabled: 1, group_id: '', sort_order: 0 },
+      { id: '8565', name: '备用服务器', provider: 'heyunidc', enabled: 1, group_id: '', sort_order: 1 },
+    ],
+  });
+  const res = await handleRequest(new Request('https://worker.example/api/admin/servers/batch-group', {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin-password', 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ server_ids: ['8564', '8565'], group_id: 'group-prod', sort_order: 5 }),
+  }), testEnv);
+  const data = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(data.updated, 2);
+  assert.deepEqual(testEnv.DB.data.servers.map(({ group_id, sort_order }) => ({ group_id, sort_order })), [
+    { group_id: 'group-prod', sort_order: 5 },
+    { group_id: 'group-prod', sort_order: 6 },
+  ]);
+});
+
+test('删除分组只会把监控项移到未分组', async () => {
+  const testEnv = env({
+    groups: [{ id: 'group-prod', name: '生产环境', sort_order: 0 }],
+    servers: [{ id: '8564', name: '主服务器', provider: 'heyunidc', enabled: 1, group_id: 'group-prod', sort_order: 8 }],
+  });
+  const res = await handleRequest(new Request('https://worker.example/api/admin/groups/group-prod', {
+    method: 'DELETE',
+    headers: { authorization: 'Bearer admin-password' },
+  }), testEnv);
+
+  assert.equal(res.status, 200);
+  assert.equal(testEnv.DB.data.groups.length, 0);
+  assert.equal(testEnv.DB.data.servers[0].group_id, '');
+  assert.equal(testEnv.DB.data.servers[0].sort_order, 0);
+});
+
+test('管理后台可以保存分组显示顺序', async () => {
+  const testEnv = env({
+    groups: [
+      { id: 'group-a', name: 'A', sort_order: 0 },
+      { id: 'group-b', name: 'B', sort_order: 1 },
+    ],
+  });
+  const res = await handleRequest(new Request('https://worker.example/api/admin/groups/reorder', {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin-password', 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ group_ids: ['group-b', 'group-a'] }),
+  }), testEnv);
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(testEnv.DB.data.groups.map(({ id, sort_order }) => ({ id, sort_order })), [
+    { id: 'group-a', sort_order: 1 },
+    { id: 'group-b', sort_order: 0 },
+  ]);
 });
 
 test('已有服务商保存时允许 API 密钥留空并保留旧密钥', async () => {

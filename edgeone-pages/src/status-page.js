@@ -154,12 +154,37 @@ function row(server) {
   </article>`;
 }
 
+function groupedCards(servers) {
+  const buckets = new Map();
+  for (const server of servers) {
+    const grouped = Boolean(server.group_id && server.group_name);
+    const key = grouped ? String(server.group_id) : '';
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        id: key,
+        name: grouped ? String(server.group_name) : '未分组',
+        sort_order: grouped ? Number(server.group_sort_order || 0) : Number.MAX_SAFE_INTEGER,
+        servers: [],
+      });
+    }
+    buckets.get(key).servers.push(server);
+  }
+  return [...buckets.values()]
+    .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, 'zh-CN'))
+    .map((group) => {
+      const items = group.servers.sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)
+        || String(displayName(a)).localeCompare(String(displayName(b)), 'zh-CN', { numeric: true }));
+      return `<section class="service-group"><h2 class="group-title">${escapeHtml(group.name)}</h2><div class="grid" role="list">${items.map(row).join('')}</div></section>`;
+    })
+    .join('');
+}
+
 export function renderStatusPage(servers, settings = {}) {
   const siteTitle = String(settings.site_title || '服务器自动监控');
   const documentTitle = String(settings.site_title || 'ZJMF 服务器监控');
   const siteDescription = String(settings.site_description || 'Cloudflare Worker 按探测间隔执行 API / HTTP(S) / TCP 检测；连续失败 3 次后确认异常并执行重启。');
   const cards = servers.length
-    ? `<section class="service-group"><h2 class="group-title">未分组</h2><div class="grid" role="list">${servers.map(row).join('')}</div></section>`
+    ? groupedCards(servers)
     : '<p class="empty">暂无启用的监控服务器。</p>';
   return `<!doctype html>
 <html lang="zh-CN">
@@ -172,7 +197,7 @@ export function renderStatusPage(servers, settings = {}) {
     *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 12% 0,rgba(16,201,143,.12),transparent 28%),linear-gradient(180deg,#fff,var(--bg));color:var(--ink);font-family:"Bahnschrift","Aptos Display","Microsoft YaHei UI",sans-serif}
     main{width:min(760px,calc(100% - 32px));margin:0 auto;padding:54px 0}.pageNav{display:flex;justify-content:flex-end;margin-bottom:22px}.adminLink{border:1px solid var(--line);background:#fff;color:#0f1b2d;text-decoration:none;border-radius:999px;padding:10px 16px;font-weight:800;box-shadow:0 12px 28px rgba(15,27,45,.08)}
     .hero{display:flex;align-items:end;justify-content:space-between;gap:18px;margin-bottom:24px}.tag{color:#0b9f75;letter-spacing:.18em;font-size:12px;font-weight:900;text-transform:uppercase}h1{font-size:34px;margin:10px 0 6px;letter-spacing:-.05em}.lead{color:var(--muted);line-height:1.65;margin:0}
-    .service-title{font-size:28px;margin:22px 0 12px}.group-title{font-size:22px;margin:0 0 10px}.grid{display:grid;gap:14px;width:min(100%,600px)}.status-card{min-width:0;border:1px solid #cfd9e8;background:linear-gradient(180deg,#fff,#f9fbff);box-shadow:0 18px 44px rgba(15,27,45,.09);border-radius:20px;padding:18px;animation:rise .45s ease both}.status-card--healthy{border-color:#b9e9d9}.status-card--down,.status-card--recovering,.status-card--rebooting{border-color:#ffc4cc}
+    .service-title{font-size:28px;margin:22px 0 12px}.service-group+.service-group{margin-top:24px}.group-title{font-size:22px;margin:0 0 10px}.grid{display:grid;gap:14px;width:min(100%,600px)}.status-card{min-width:0;border:1px solid #cfd9e8;background:linear-gradient(180deg,#fff,#f9fbff);box-shadow:0 18px 44px rgba(15,27,45,.09);border-radius:20px;padding:18px;animation:rise .45s ease both}.status-card--healthy{border-color:#b9e9d9}.status-card--down,.status-card--recovering,.status-card--rebooting{border-color:#ffc4cc}
     .card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.name-row{display:flex;gap:12px;align-items:flex-start}.dot{width:10px;height:10px;border-radius:99px;background:var(--ok);margin-top:8px;box-shadow:0 0 0 4px rgba(16,201,143,.13)}.status-card--down .dot,.status-card--rebooting .dot{background:var(--bad);box-shadow:0 0 0 4px rgba(239,82,103,.13)}h3{margin:0;font-size:22px}.name-row p{margin:2px 0 0;color:#5f718c}.badges{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.uptime,.state{border:1px solid #b8ecd8;background:#ecfdf6;color:#047857;border-radius:999px;padding:4px 10px;font-size:13px}
     .caption{color:var(--muted);margin:18px 0 8px}.day-track{height:28px;border-radius:8px;background:var(--track);padding:0 3px;display:flex;gap:2px;align-items:stretch;overflow:visible}.day-segment{position:relative;flex:1;min-width:0;border-radius:6px;background:#cdd8e7;outline:0;transition:transform .16s ease,box-shadow .16s ease}.day-segment.placeholder{background:#dce5f2;opacity:.75}.day-segment.ok{background:linear-gradient(90deg,#34d399,#10c98f)}.day-segment.warn{background:#fbbf24}.day-segment.bad{background:var(--bad)}.day-empty{display:grid;place-items:center;width:100%;color:var(--muted);font-size:13px}
     .probe-bars{height:30px;background:var(--track);border-radius:8px;padding:5px 6px;display:flex;gap:4px;align-items:end}.probe-bars span{position:relative;display:block;width:6px;border-radius:2px;outline:0;transition:transform .16s ease,box-shadow .16s ease}.probe-bars .ok{background:#10c98f}.probe-bars .bad{background:var(--bad)}.probe-bars .probe-placeholder{background:#d9e4f2;opacity:.85}.day-segment[data-tip]:hover,.day-segment[data-tip]:focus,.probe-bars span[data-tip]:hover,.probe-bars span[data-tip]:focus{box-shadow:0 0 0 2px #fff,0 0 0 4px rgba(15,27,45,.20);transform:translateY(-7px);z-index:4}

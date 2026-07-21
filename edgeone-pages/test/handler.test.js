@@ -173,6 +173,30 @@ test('EdgeOne 监控项弹窗可以快速新增 IDC 并自动选中', async () =
   assert.match(html, /\$\('serverProviderSelect'\)\.value=payload\.name/);
 });
 
+test('EdgeOne 监控项页面实装分组筛选、管理和批量分配', async () => {
+  const res = await handleEdgeOneRequest(new Request('https://edgeone.example/admin'), {
+    ADMIN_TOKEN: 'admin',
+    ZJMF_KV: new MemoryKV(),
+  });
+  const html = await res.text();
+  const script = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>'));
+
+  assert.doesNotThrow(() => new Function(script));
+  assert.match(html, /\.dashboard\{[^}]*align-items:start/);
+  assert.match(html, /id="groupLines"/);
+  assert.match(html, /data-group-filter="all"/);
+  assert.match(html, /data-group-filter="ungrouped"/);
+  assert.match(html, /id="newGroupBtn"/);
+  assert.match(html, /id="groupModal"/);
+  assert.match(html, /id="batchGroupSelect"/);
+  assert.match(html, /id="moveSelectedBtn"/);
+  assert.match(html, /selectAllServers/);
+  assert.match(html, /function renderGroupManager/);
+  assert.match(html, /function filteredServers/);
+  assert.match(html, /\/api\/admin\/groups/);
+  assert.match(html, /\/api\/admin\/servers\/batch-group/);
+});
+
 test('EdgeOne 初始化默认使用 HTTP(S) + API', async () => {
   const kv = new MemoryKV();
   const env = { ADMIN_TOKEN: 'admin', ZJMF_KV: kv };
@@ -237,6 +261,55 @@ test('EdgeOne 支持不同 IDC 保存相同远程产品 ID', async () => {
     { id: 'heyun::1001', remote_id: '1001', provider: 'heyun' },
     { id: 'other::1001', remote_id: '1001', provider: 'other' },
   ]);
+});
+
+test('EdgeOne 管理接口支持分组创建、批量移动和安全删除', async () => {
+  const kv = new MemoryKV();
+  const env = { ADMIN_TOKEN: 'admin', ZJMF_KV: kv };
+  await handleEdgeOneRequest(new Request('https://edgeone.example/api/admin/setup', {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin', 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      providers: [{ name: 'heyunidc', display_name: '核云', api_base_url: 'https://api.example/v1', api_account: 'account', api_password: 'secret' }],
+      servers: [{ id: '1001', name: '测试服务器', provider: 'heyunidc' }],
+      settings: {},
+    }),
+  }), env);
+  const createRes = await handleEdgeOneRequest(new Request('https://edgeone.example/api/admin/groups', {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin', 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ name: '生产环境' }),
+  }), env);
+  const created = await createRes.json();
+  const moveRes = await handleEdgeOneRequest(new Request('https://edgeone.example/api/admin/servers/batch-group', {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin', 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ server_ids: ['heyunidc::1001'], group_id: created.group.id, sort_order: 3 }),
+  }), env);
+  const overviewRes = await handleEdgeOneRequest(new Request('https://edgeone.example/api/admin/overview', {
+    headers: { authorization: 'Bearer admin' },
+  }), env);
+  const overview = await overviewRes.json();
+
+  assert.equal(createRes.status, 200);
+  assert.equal(moveRes.status, 200);
+  assert.equal(overview.groups[0].name, '生产环境');
+  assert.equal(overview.servers[0].group_id, created.group.id);
+  assert.equal(overview.servers[0].sort_order, 3);
+
+  const deleteRes = await handleEdgeOneRequest(new Request(`https://edgeone.example/api/admin/groups/${created.group.id}`, {
+    method: 'DELETE',
+    headers: { authorization: 'Bearer admin' },
+  }), env);
+  const afterRes = await handleEdgeOneRequest(new Request('https://edgeone.example/api/admin/overview', {
+    headers: { authorization: 'Bearer admin' },
+  }), env);
+  const after = await afterRes.json();
+
+  assert.equal(deleteRes.status, 200);
+  assert.equal(after.groups.length, 0);
+  assert.equal(after.servers[0].group_id, '');
+  assert.equal(after.servers[0].sort_order, 0);
 });
 
 test('EdgeOne 初始化复用旧 KV 中同一 IDC 的服务器 ID', async () => {

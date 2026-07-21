@@ -1,0 +1,13 @@
+CREATE TABLE IF NOT EXISTS monitor_groups (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_monitor_groups_name
+  ON monitor_groups(name COLLATE NOCASE);
+
+ALTER TABLE servers ADD COLUMN group_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE servers ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;

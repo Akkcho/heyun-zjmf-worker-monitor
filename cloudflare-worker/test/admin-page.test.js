@@ -223,3 +223,33 @@ test('监控项弹窗可以快速新增 IDC 并自动选中', () => {
   assert.match(html, /renderProviderOptions\(payload\.name\)/);
   assert.match(html, /\$\('serverProviderSelect'\)\.value=payload\.name/);
 });
+
+test('监控项页面实装分组筛选、管理和批量分配', () => {
+  const html = renderAdminPage();
+  const script = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>'));
+
+  assert.doesNotThrow(() => new Function(script));
+  assert.match(html, /\.dashboard\{[^}]*align-items:start/);
+  assert.match(html, /\.topbar h1\{margin:0/);
+  assert.match(html, /id="groupLines"/);
+  assert.match(html, /data-group-filter="all"/);
+  assert.match(html, /data-group-filter="ungrouped"/);
+  assert.match(html, /id="newGroupBtn"/);
+  assert.match(html, /id="groupModal"/);
+  assert.match(html, /id="groupForm"/);
+  assert.match(html, /id="batchGroupSelect"/);
+  assert.match(html, /id="batchSortOrder"/);
+  assert.match(html, /id="moveSelectedBtn"/);
+  assert.match(html, /id="clearSelectedBtn"/);
+  assert.match(html, /selectAllServers/);
+  assert.match(html, /id="groupModeSelect"/);
+  assert.match(html, /id="sortFieldSelect"/);
+  assert.match(html, /id="sortDirectionSelect"/);
+  assert.match(html, /function renderGroupManager/);
+  assert.match(html, /function filteredServers/);
+  assert.match(html, /function moveSelectedServers/);
+  assert.match(html, /\/api\/admin\/groups/);
+  assert.match(html, /\/api\/admin\/groups\/reorder/);
+  assert.match(html, /\/api\/admin\/servers\/batch-group/);
+  assert.doesNotMatch(html, /\$\('ungroupedCount'\)\.textContent=state\.servers\.length/);
+});

@@ -80,6 +80,7 @@ function defaultState() {
   return {
     settings: {},
     providers: [],
+    groups: [],
     servers: [],
     runtimes: {},
     events: [],
@@ -91,9 +92,15 @@ function defaultState() {
 
 function normalizeState(raw) {
   const state = { ...defaultState(), ...(raw && typeof raw === 'object' ? raw : {}) };
+  state.groups = (Array.isArray(state.groups) ? state.groups : []).map((group) => ({
+    ...group,
+    sort_order: numberSetting(group.sort_order, 0),
+  }));
   state.servers = (Array.isArray(state.servers) ? state.servers : []).map((server) => ({
     ...server,
     remote_id: server.remote_id || server.id,
+    group_id: server.group_id || '',
+    sort_order: numberSetting(server.sort_order, 0),
   }));
   return state;
 }
@@ -186,6 +193,16 @@ export class KVRepository {
     return state.servers.map((server) => ({ ...server, enabled: server.enabled !== false }));
   }
 
+  async listGroups() {
+    const state = await this.readState();
+    return [...state.groups].sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)
+      || String(a.name).localeCompare(String(b.name), 'zh-CN'));
+  }
+
+  async getGroup(id) {
+    return (await this.listGroups()).find((group) => String(group.id) === String(id)) || null;
+  }
+
   async getServer(id) {
     return (await this.listServers()).find((server) => String(server.id) === String(id)) || null;
   }
@@ -218,10 +235,66 @@ export class KVRepository {
 
   async upsertServer(server, now) {
     await this.updateState((state) => {
-      const next = { ...server, remote_id: server.remote_id || server.id, enabled: server.enabled !== false, created_at: server.created_at || now, updated_at: now };
+      const next = {
+        ...server,
+        remote_id: server.remote_id || server.id,
+        group_id: server.group_id || '',
+        sort_order: numberSetting(server.sort_order, 0),
+        enabled: server.enabled !== false,
+        created_at: server.created_at || now,
+        updated_at: now,
+      };
       const index = state.servers.findIndex((item) => String(item.id) === String(server.id));
       if (index >= 0) state.servers[index] = { ...state.servers[index], ...next };
       else state.servers.push(next);
+    });
+  }
+
+  async upsertGroup(group, now) {
+    await this.updateState((state) => {
+      const next = {
+        ...group,
+        sort_order: numberSetting(group.sort_order, 0),
+        created_at: group.created_at || now,
+        updated_at: now,
+      };
+      const index = state.groups.findIndex((item) => String(item.id) === String(group.id));
+      if (index >= 0) state.groups[index] = { ...state.groups[index], ...next };
+      else state.groups.push(next);
+    });
+  }
+
+  async reorderGroups(groupIds, now) {
+    await this.updateState((state) => {
+      const positions = new Map(groupIds.map((id, index) => [String(id), index]));
+      state.groups = state.groups.map((group) => positions.has(String(group.id))
+        ? { ...group, sort_order: positions.get(String(group.id)), updated_at: now }
+        : group);
+    });
+  }
+
+  async assignServersToGroup(serverIds, groupId, sortOrder, now) {
+    await this.updateState((state) => {
+      const positions = new Map(serverIds.map((id, index) => [String(id), index]));
+      state.servers = state.servers.map((server) => {
+        const index = positions.get(String(server.id));
+        if (index == null) return server;
+        return {
+          ...server,
+          group_id: groupId,
+          sort_order: sortOrder == null ? numberSetting(server.sort_order, 0) : sortOrder + index,
+          updated_at: now,
+        };
+      });
+    });
+  }
+
+  async deleteGroup(id, now) {
+    await this.updateState((state) => {
+      state.groups = state.groups.filter((group) => String(group.id) !== String(id));
+      state.servers = state.servers.map((server) => String(server.group_id || '') === String(id)
+        ? { ...server, group_id: '', sort_order: 0, updated_at: now }
+        : server);
     });
   }
 

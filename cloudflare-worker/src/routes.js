@@ -36,6 +36,13 @@ function newServerId(provider, remoteId) {
   return `${provider}::${remoteId}`;
 }
 
+function newGroupId() {
+  const suffix = globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `group-${suffix}`;
+}
+
 async function sha256Hex(value) {
   const bytes = new TextEncoder().encode(String(value));
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -204,6 +211,8 @@ function adminHost(host) {
 async function publicStatus(repo, settings = null) {
   const resolvedSettings = settings || await repo.getSettings();
   const servers = (await repo.listStatus()).filter(visibleOnStatus).map(publicServer);
+  const groups = await repo.listGroups();
+  const groupMap = new Map(groups.map((group) => [String(group.id), group]));
   const ids = servers.map((server) => String(server.id));
   const daily = await repo.listDailyHistory(ids, 30, Math.floor(Date.now() / 1000), resolvedSettings.check_interval);
   const events = await repo.listPublicEvents(ids);
@@ -213,6 +222,8 @@ async function publicStatus(repo, settings = null) {
   }
   return servers.map((server) => ({
     ...server,
+    group_name: groupMap.get(String(server.group_id || ''))?.name || '',
+    group_sort_order: Number(groupMap.get(String(server.group_id || ''))?.sort_order ?? Number.MAX_SAFE_INTEGER),
     daily_history: daily.get(String(server.id)) || [],
     events: (events.get(String(server.id)) || []).map(publicEvent),
     recent_checks: recent.get(String(server.id)) || [],
@@ -260,6 +271,7 @@ export async function handleRequest(request, env) {
         notify_secret: settings.notify_secret ? '已配置' : '',
       },
       providers: await repo.listProviders(),
+      groups: await repo.listGroups(),
       servers: adminServers(await repo.listServers(), status),
       status,
       events: await repo.listEvents(50),
@@ -302,6 +314,63 @@ export async function handleRequest(request, env) {
 
   if (url.pathname === '/api/admin/setup/reset' && request.method === 'POST') {
     await repo.resetTutorialData();
+    return json({ ok: true });
+  }
+
+  if (url.pathname === '/api/admin/groups' && request.method === 'POST') {
+    const body = await readJson(request);
+    const name = String(body?.name || '').trim();
+    if (!name || name.length > 64) return json({ error: 'INVALID_GROUP_NAME' }, 400);
+    const groups = await repo.listGroups();
+    const requestedId = String(body?.id || '').trim();
+    const existing = requestedId ? groups.find((group) => String(group.id) === requestedId) : null;
+    if (requestedId && !existing) return json({ error: 'GROUP_NOT_FOUND' }, 404);
+    if (groups.some((group) => String(group.id) !== requestedId && String(group.name).toLocaleLowerCase('zh-CN') === name.toLocaleLowerCase('zh-CN'))) {
+      return json({ error: 'GROUP_NAME_EXISTS' }, 409);
+    }
+    const requestedSort = Number(body?.sort_order);
+    const nextSort = Object.hasOwn(body || {}, 'sort_order') && Number.isFinite(requestedSort)
+      ? Math.max(0, Math.trunc(requestedSort))
+      : Number(existing?.sort_order ?? (groups.length ? Math.max(...groups.map((group) => Number(group.sort_order || 0))) + 1 : 0));
+    const group = { id: existing?.id || newGroupId(), name, sort_order: nextSort };
+    await repo.upsertGroup(group, Math.floor(Date.now() / 1000));
+    return json({ ok: true, group });
+  }
+
+  if (url.pathname === '/api/admin/groups/reorder' && request.method === 'POST') {
+    const body = await readJson(request);
+    const groupIds = [...new Set((Array.isArray(body?.group_ids) ? body.group_ids : []).map((id) => String(id).trim()).filter(Boolean))];
+    const groups = await repo.listGroups();
+    const known = new Set(groups.map((group) => String(group.id)));
+    if (groupIds.length !== groups.length || groupIds.some((id) => !known.has(id))) {
+      return json({ error: 'INVALID_GROUP_ORDER' }, 400);
+    }
+    await repo.reorderGroups(groupIds, Math.floor(Date.now() / 1000));
+    return json({ ok: true });
+  }
+
+  if (url.pathname === '/api/admin/servers/batch-group' && request.method === 'POST') {
+    const body = await readJson(request);
+    const serverIds = [...new Set((Array.isArray(body?.server_ids) ? body.server_ids : []).map((id) => String(id).trim()).filter(Boolean))];
+    if (!serverIds.length) return json({ error: 'NO_SERVERS_SELECTED' }, 400);
+    const groupId = String(body?.group_id || '').trim();
+    if (groupId && !(await repo.getGroup(groupId))) return json({ error: 'GROUP_NOT_FOUND' }, 404);
+    const servers = await repo.listServers();
+    const known = new Set(servers.map((server) => String(server.id)));
+    const missing = serverIds.find((id) => !known.has(id));
+    if (missing) return json({ error: 'SERVER_NOT_FOUND', server_id: missing }, 404);
+    const parsedSort = Number(body?.sort_order);
+    const sortOrder = Object.hasOwn(body || {}, 'sort_order') && body.sort_order !== '' && Number.isFinite(parsedSort)
+      ? Math.max(0, Math.trunc(parsedSort))
+      : null;
+    await repo.assignServersToGroup(serverIds, groupId, sortOrder, Math.floor(Date.now() / 1000));
+    return json({ ok: true, updated: serverIds.length });
+  }
+
+  if (url.pathname.startsWith('/api/admin/groups/') && request.method === 'DELETE') {
+    const id = decodeURIComponent(url.pathname.slice('/api/admin/groups/'.length));
+    if (!id || !(await repo.getGroup(id))) return json({ error: 'GROUP_NOT_FOUND' }, 404);
+    await repo.deleteGroup(id, Math.floor(Date.now() / 1000));
     return json({ ok: true });
   }
 
@@ -479,6 +548,8 @@ export async function handleRequest(request, env) {
       : (await repo.listServers()).find((item) => item.provider === provider && remoteServerId(item) === requestedRemoteId) || null;
     const remoteId = requestedRemoteId || existing?.remote_id || existing?.id;
     const settings = await repo.getSettings();
+    const requestedGroupId = Object.hasOwn(body, 'group_id') ? String(body.group_id || '').trim() : String(existing?.group_id || '');
+    if (requestedGroupId && !(await repo.getGroup(requestedGroupId))) return json({ error: 'GROUP_NOT_FOUND' }, 400);
     const nextServer = {
       ...body,
       id: existing?.id || (requestedId.includes('::') ? requestedId : newServerId(provider, remoteId)),
@@ -492,6 +563,10 @@ export async function handleRequest(request, env) {
       visible_on_status: Object.hasOwn(body, 'visible_on_status')
         ? boolValueWithDefault(body.visible_on_status, true)
         : boolValueWithDefault(existing?.visible_on_status, true),
+      group_id: requestedGroupId,
+      sort_order: Object.hasOwn(body, 'sort_order')
+        ? Math.max(0, Math.trunc(Number(body.sort_order) || 0))
+        : Number(existing?.sort_order || 0),
       scheduled_reboot: '',
     };
     await repo.upsertServer(nextServer, Math.floor(Date.now() / 1000));
