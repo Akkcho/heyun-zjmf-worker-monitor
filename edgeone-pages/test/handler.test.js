@@ -187,10 +187,16 @@ test('EdgeOne 监控项页面实装分组筛选、管理和批量分配', async 
   assert.match(html, /data-group-filter="all"/);
   assert.match(html, /data-group-filter="ungrouped"/);
   assert.match(html, /id="newGroupBtn"/);
+  assert.match(html, /id="groupCountText"/);
   assert.match(html, /id="groupModal"/);
+  assert.match(html, /id="deleteGroupModal"/);
+  assert.match(html, /class="groupMeta"/);
   assert.match(html, /id="batchGroupSelect"/);
   assert.match(html, /id="moveSelectedBtn"/);
   assert.match(html, /selectAllServers/);
+  assert.doesNotMatch(html, /id="groupModeSelect"/);
+  assert.doesNotMatch(html, /function groupedMonitorHtml|groupTableRow|emptyGroupRow/);
+  assert.match(html, /batch\.value=activeGroupFilter==='ungrouped'\?'':activeGroupFilter/);
   assert.match(html, /function renderGroupManager/);
   assert.match(html, /function filteredServers/);
   assert.match(html, /\/api\/admin\/groups/);
