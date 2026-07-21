@@ -46,9 +46,97 @@ $script:WranglerCliPath = Join-Path $script:WranglerToolRoot "node_modules\wrang
 $script:WranglerNpmCache = Join-Path $CacheRoot "npm-cache"
 $env:npm_config_cache = $script:WranglerNpmCache
 $env:WRANGLER_PACKAGE = $WranglerPackage
+$script:TranscriptStarted = $false
+$script:LogFinalized = $false
+$script:RawLogPath = ""
+$script:SafeLogPath = ""
 
 function Write-Step([string]$Message) { Write-Host ""; Write-Host "==> $Message" -ForegroundColor Cyan }
 function Write-Note([string]$Message) { Write-Host " -> $Message" -ForegroundColor DarkGray }
+function Start-DeploymentLog {
+    try {
+        $logDirectory = Join-Path $Root "logs"
+        New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $script:SafeLogPath = Join-Path $logDirectory "部署日志-$timestamp-$PID.log"
+        $script:RawLogPath = Join-Path ([System.IO.Path]::GetTempPath()) "zjmf-deploy-$timestamp-$PID-$([guid]::NewGuid().ToString('N')).raw.log"
+        Start-Transcript -Path $script:RawLogPath -Force -UseMinimalHeader | Out-Null
+        $script:TranscriptStarted = $true
+        Write-Note "已开启部署日志，结束后会自动脱敏。"
+    } catch {
+        $script:TranscriptStarted = $false
+        Write-Host "警告：无法开启部署日志：$($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+function Get-SensitiveLogValues {
+    $values = [System.Collections.Generic.List[string]]::new()
+    foreach ($name in @(
+        "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "WEB_UPDATE_GITHUB_TOKEN",
+        "ZJMF_ADMIN_TOKEN", "ZJMF_API_ACCOUNT", "ZJMF_API_PASSWORD", "ZJMF_SERVER_IP",
+        "PUSHPLUS_TOKEN", "USERPROFILE"
+    )) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if (-not [string]::IsNullOrWhiteSpace($value)) { $values.Add($value) }
+    }
+    $configVariable = Get-Variable -Name Config -Scope Script -ErrorAction SilentlyContinue
+    if ($configVariable -and $configVariable.Value -is [System.Collections.IDictionary]) {
+        foreach ($key in @(
+            "cloudflareAccountId", "adminToken", "webUpdateGitHubToken", "zjmfApiAccount",
+            "zjmfApiPassword", "serverIp", "tcpHost", "pushplusToken"
+        )) {
+            if ($configVariable.Value.Contains($key)) {
+                $value = [string]$configVariable.Value[$key]
+                if (-not [string]::IsNullOrWhiteSpace($value)) { $values.Add($value) }
+            }
+        }
+    }
+    foreach ($name in @("adminToken", "versionToken", "webUpdateToken")) {
+        $variable = Get-Variable -Name $name -Scope Script -ErrorAction SilentlyContinue
+        if ($variable -and -not [string]::IsNullOrWhiteSpace([string]$variable.Value)) { $values.Add([string]$variable.Value) }
+    }
+    return $values | Select-Object -Unique
+}
+function Protect-DeploymentLogText([string]$Text) {
+    if ([string]::IsNullOrEmpty($Text)) { return "" }
+    $safe = $Text
+    foreach ($value in @(Get-SensitiveLogValues)) {
+        if ($value.Length -ge 6 -and $value -notmatch '[\r\n]') { $safe = $safe.Replace($value, "[REDACTED]") }
+    }
+    $safe = [regex]::Replace($safe, '(?i)\b(?:cfut_|github_pat_|gh[pousr]_)[A-Za-z0-9_-]{8,}\b', '[REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}', '${1}[REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)([?&](?:token|secret|password|passwd|api[_-]?key)=)[^&\s]+', '${1}[REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', '[REDACTED]')
+    $safe = [regex]::Replace($safe, '(?<!\d)1[3-9]\d{9}(?!\d)', '[REDACTED]')
+    $safe = [regex]::Replace($safe, '\b(?:\d{1,3}\.){3}\d{1,3}\b', '[REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)\b[0-9a-f]{32}\b', '[REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)C:\\Users\\[^\\\s]+', '[REDACTED_USERPROFILE]')
+    $safe = [regex]::Replace($safe, '(?im)^Username:\s*.+$', 'Username: [REDACTED]')
+    return $safe
+}
+function Complete-DeploymentLog {
+    if ($script:LogFinalized) { return }
+    $script:LogFinalized = $true
+    if (-not $script:TranscriptStarted) { return }
+    try { Stop-Transcript | Out-Null } catch {}
+    $logError = ""
+    try {
+        $raw = [System.IO.File]::ReadAllText($script:RawLogPath)
+        $safe = Protect-DeploymentLogText $raw
+        $header = "heyun-zjmf-worker-monitor 脱敏部署日志`r`n敏感凭证、账号、IP 和本机用户信息已替换为 [REDACTED]。`r`n`r`n"
+        [System.IO.File]::WriteAllText($script:SafeLogPath, $header + $safe, [System.Text.UTF8Encoding]::new($false))
+    } catch {
+        $logError = $_.Exception.Message
+    } finally {
+        if ($script:RawLogPath -and (Test-Path -LiteralPath $script:RawLogPath)) {
+            Remove-Item -LiteralPath $script:RawLogPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if ($logError) {
+        Write-Host "警告：部署日志脱敏保存失败：$logError" -ForegroundColor Yellow
+    } else {
+        Write-Host "脱敏部署日志：$script:SafeLogPath" -ForegroundColor Cyan
+    }
+}
 function Invoke-DownloadFile([string]$Url, [string]$OutFile) {
     if (Test-Path $OutFile) { Remove-Item -LiteralPath $OutFile -Force }
     try {
@@ -99,9 +187,15 @@ function Read-OptionalSecret([string]$Prompt) {
     if ($null -eq $secure) { return "" }
     return (ConvertTo-PlainText $secure).Trim()
 }
+function Read-RequiredSecret([string]$Prompt) {
+    do {
+        $value = Read-OptionalSecret $Prompt
+    } while ([string]::IsNullOrWhiteSpace($value))
+    return $value
+}
 function Read-AdminTokenWithConfirmation {
     while ($true) {
-        $first = Read-OptionalSecret "请输入 ZJMF_ADMIN_TOKEN 网站密码（直接回车默认 admin）"
+        $first = Read-OptionalSecret "请输入 ZJMF_ADMIN_TOKEN 网站密码（直接回车使用默认密码）"
         $second = Read-OptionalSecret "请再次输入 ZJMF_ADMIN_TOKEN 网站密码"
         if ([string]::IsNullOrWhiteSpace($first) -and [string]::IsNullOrWhiteSpace($second)) { return "admin" }
         if ($first -eq $second -and -not [string]::IsNullOrWhiteSpace($first)) { return $first }
@@ -423,7 +517,7 @@ function Invoke-InteractiveSetup($Config) {
     if (-not $Interactive) { return }
     Show-InteractiveGuide
     if ([string]::IsNullOrWhiteSpace($env:CLOUDFLARE_API_TOKEN)) {
-        $env:CLOUDFLARE_API_TOKEN = Read-RequiredText "请输入 Cloudflare API Token"
+        $env:CLOUDFLARE_API_TOKEN = Read-RequiredSecret "请输入 Cloudflare API Token（输入内容不会显示）"
     }
     $whoami = ""
     try { $whoami = Invoke-CommandLine (Get-WranglerCommand @("whoami")) } catch {}
@@ -459,7 +553,7 @@ function Invoke-InteractiveSetup($Config) {
     }
     $Config.adminToken = Read-AdminTokenWithConfirmation
     Save-Config $Config
-    if ($Config.adminToken -eq "admin") { Write-Host "已使用默认管理后台密码：admin。部署后可在管理面板设置里修改。" -ForegroundColor Yellow }
+    if ($Config.adminToken -eq "admin") { Write-Host "已使用默认管理后台密码。部署后可在管理面板设置里修改。" -ForegroundColor Yellow }
 }
 function Ensure-CloudflareAuth($Config) {
     $whoami = ""
@@ -606,8 +700,9 @@ function Seed-MonitorConfig($BaseUrl, $AdminToken, $Config) {
     $null = Post-Admin $BaseUrl $AdminToken "/api/admin/run" @{}
 }
 
-trap { Write-Host ""; Write-Host "部署已中断: $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
+trap { Write-Host ""; Write-Host "部署已中断: $($_.Exception.Message)" -ForegroundColor Red; Complete-DeploymentLog; exit 1 }
 
+if (-not $PreflightOnly) { Start-DeploymentLog }
 $Config = Read-Config
 $ConfigPath = $script:ConfigPath
 $UpstreamRepo = Get-ConfigValue $Config "upstreamRepo" $UpstreamRepo
@@ -647,7 +742,7 @@ Ensure-CloudflareAuth $Config
 
 Write-Step "创建或复用 D1，并写入 wrangler.toml"
 Invoke-CommandLine @("node", (Join-Path $workerRoot "scripts\prepare-cloudflare.mjs")) $workerRoot | Write-Host
-if ($PrepareOnly) { Write-Host "已完成预生成，未正式部署。" -ForegroundColor Green; exit 0 }
+if ($PrepareOnly) { Write-Host "已完成预生成，未正式部署。" -ForegroundColor Green; Complete-DeploymentLog; exit 0 }
 
 Write-Step "执行 D1 迁移"
 Invoke-CommandLineWithRetry (Get-WranglerCommand @("d1", "migrations", "apply", $databaseName, "--remote")) $workerRoot | Out-Null
@@ -687,3 +782,4 @@ if ($workerUrl) {
     Write-Host "Worker 名称: $workerName"
     Write-Host "请从上方 Wrangler 输出复制 workers.dev 链接。"
 }
+Complete-DeploymentLog

@@ -57,6 +57,24 @@ test('Windows 一键部署使用独立缓存安装并复用 Wrangler CLI', () =>
   assert.match(prepare, /execFileSync\(process\.execPath, \[wranglerCliPath, \.\.\.args\]/);
 });
 
+test('Windows 一键部署自动生成脱敏日志且敏感输入不回显', () => {
+  const script = readUtf8('deploy-one-click.ps1');
+
+  assert.match(script, /function Start-DeploymentLog/);
+  assert.match(script, /function Protect-DeploymentLogText/);
+  assert.match(script, /function Complete-DeploymentLog/);
+  assert.match(script, /Start-Transcript/);
+  assert.match(script, /部署日志-/);
+  assert.match(script, /\[REDACTED\]/);
+  assert.match(script, /cfut_/);
+  assert.match(script, /github_pat_/);
+  assert.match(script, /Read-RequiredSecret/);
+  assert.match(script, /CLOUDFLARE_API_TOKEN = Read-RequiredSecret/);
+  assert.doesNotMatch(script, /CLOUDFLARE_API_TOKEN = Read-RequiredText/);
+  assert.doesNotMatch(script, /默认 admin|密码：admin/);
+  assert.match(script, /trap \{[\s\S]*Complete-DeploymentLog[\s\S]*exit 1 \}/);
+});
+
 test('步骤1脚本写明 GitHub 仓库地址并复用为下载源', () => {
   const wrapperBytes = readFileSync(path.join(localScriptDir, '步骤1-一键安装脚本.bat'));
   const wrapperLatin1 = wrapperBytes.toString('binary');
