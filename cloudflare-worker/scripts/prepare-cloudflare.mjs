@@ -5,13 +5,18 @@ import { platform } from 'node:os';
 const workerName = process.env.WORKER_NAME || 'zjmf-monitor';
 const databaseName = process.env.D1_DATABASE_NAME || `${workerName}-d1`;
 const isWindows = platform() === 'win32';
+const wranglerCliPath = process.env.WRANGLER_CLI_PATH?.trim() || '';
+const wranglerPackage = process.env.WRANGLER_PACKAGE?.trim() || 'wrangler@latest';
 
 function runWrangler(args) {
-  return execFileSync('npx', ['wrangler@latest', ...args], {
+  const options = {
     encoding: 'utf8',
-    shell: isWindows,
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  };
+  if (wranglerCliPath) {
+    return execFileSync(process.execPath, [wranglerCliPath, ...args], options);
+  }
+  return execFileSync('npx', ['--yes', wranglerPackage, ...args], { ...options, shell: isWindows });
 }
 
 function parseD1ListJson(output) {

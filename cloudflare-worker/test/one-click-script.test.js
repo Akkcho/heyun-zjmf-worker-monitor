@@ -43,6 +43,20 @@ test('PowerShell 部署脚本启动后再解析脚本目录和默认缓存目录
   assert.doesNotMatch(script, /GetFullPath\(\$PSScriptRoot\)/);
 });
 
+test('Windows 一键部署使用独立缓存安装并复用 Wrangler CLI', () => {
+  const script = readUtf8('deploy-one-click.ps1');
+  const prepare = readFileSync(path.join(repoRoot, 'cloudflare-worker', 'scripts', 'prepare-cloudflare.mjs'), 'utf8');
+
+  assert.match(script, /function Initialize-Wrangler/);
+  assert.match(script, /npm-cache/);
+  assert.match(script, /@\(\$Npm, "install", "--prefix"/);
+  assert.match(script, /\$env:WRANGLER_CLI_PATH = \$script:WranglerCliPath/);
+  assert.match(script, /return @\("node", \$script:WranglerCliPath\) \+ \$SubCommands/);
+  assert.doesNotMatch(script, /return @\(\$Npx, "--yes", \$WranglerPackage\)/);
+  assert.match(prepare, /process\.env\.WRANGLER_CLI_PATH/);
+  assert.match(prepare, /execFileSync\(process\.execPath, \[wranglerCliPath, \.\.\.args\]/);
+});
+
 test('步骤1脚本写明 GitHub 仓库地址并复用为下载源', () => {
   const wrapperBytes = readFileSync(path.join(localScriptDir, '步骤1-一键安装脚本.bat'));
   const wrapperLatin1 = wrapperBytes.toString('binary');

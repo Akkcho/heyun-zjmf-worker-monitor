@@ -39,8 +39,13 @@ $ErrorActionPreference = "Stop"
 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$Npx = if (Get-Command "npx.cmd" -ErrorAction SilentlyContinue) { "npx.cmd" } else { "npx" }
+$Npm = if (Get-Command "npm.cmd" -ErrorAction SilentlyContinue) { "npm.cmd" } else { "npm" }
 $WranglerPackage = "wrangler@$WranglerVersion"
+$script:WranglerToolRoot = Join-Path $CacheRoot "tools\wrangler-$WranglerVersion"
+$script:WranglerCliPath = Join-Path $script:WranglerToolRoot "node_modules\wrangler\bin\wrangler.js"
+$script:WranglerNpmCache = Join-Path $CacheRoot "npm-cache"
+$env:npm_config_cache = $script:WranglerNpmCache
+$env:WRANGLER_PACKAGE = $WranglerPackage
 
 function Write-Step([string]$Message) { Write-Host ""; Write-Host "==> $Message" -ForegroundColor Cyan }
 function Write-Note([string]$Message) { Write-Host " -> $Message" -ForegroundColor DarkGray }
@@ -227,7 +232,28 @@ function Get-DefaultConfigText {
 '@
 }
 function Get-WranglerCommand([string[]]$SubCommands) {
-    return @($Npx, "--yes", $WranglerPackage) + $SubCommands
+    return @("node", $script:WranglerCliPath) + $SubCommands
+}
+function Initialize-Wrangler {
+    if (Test-Path -LiteralPath $script:WranglerCliPath) {
+        $env:WRANGLER_CLI_PATH = $script:WranglerCliPath
+        Write-Note "复用已安装的 Wrangler $WranglerVersion。"
+        return
+    }
+    Write-Step "准备 Wrangler $WranglerVersion"
+    New-Item -ItemType Directory -Path $script:WranglerToolRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $script:WranglerNpmCache -Force | Out-Null
+    $installCommand = @($Npm, "install", "--prefix", $script:WranglerToolRoot, "--cache", $script:WranglerNpmCache, "--no-save", "--no-package-lock", "--no-audit", "--no-fund", $WranglerPackage)
+    try {
+        Invoke-CommandLineWithRetry $installCommand $Root $null 3 | Out-Null
+    } catch {
+        if (-not (Test-Path -LiteralPath $script:WranglerCliPath)) { throw }
+        Write-Note "npm 清理缓存时返回警告，但 Wrangler 已安装，继续部署。"
+    }
+    if (-not (Test-Path -LiteralPath $script:WranglerCliPath)) {
+        throw "Wrangler 安装失败，请关闭其他 Node.js/npm 窗口后重新运行。"
+    }
+    $env:WRANGLER_CLI_PATH = $script:WranglerCliPath
 }
 function Get-CloudflareWhoamiAccountIds([string]$Output) {
     $ids = @()
@@ -265,7 +291,7 @@ function Invoke-CommandLineWithRetry(
     [string]$InputText = $null,
     [int]$MaxAttempts = 3
 ) {
-    $transientPattern = '(?i)fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR_|socket hang up'
+    $transientPattern = '(?i)fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR_|socket hang up|EBUSY|EPERM|resource busy or locked'
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         try {
             return (Invoke-CommandLine $Command $WorkingDirectory $InputText)
@@ -297,14 +323,14 @@ function Invoke-CommandLineVisible([string[]]$Command, [string]$WorkingDirectory
 function Invoke-WranglerDeploy([string]$WorkerRoot, [string]$WorkerName) {
     Push-Location $WorkerRoot
     try {
-        $commandText = "$Npx --yes $WranglerPackage deploy"
+        $commandText = "node `"$script:WranglerCliPath`" deploy"
         $maxAttempts = 5
         $transientPattern = '(?i)fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR_|socket hang up'
         for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             Write-Note "运行: $commandText"
             $deployOutput = @()
             $global:LASTEXITCODE = 0
-            & $Npx --yes $WranglerPackage deploy 2>&1 | Tee-Object -Variable deployOutput | Out-Host
+            & node $script:WranglerCliPath deploy 2>&1 | Tee-Object -Variable deployOutput | Out-Host
             $exitCode = $LASTEXITCODE
             if ($exitCode -eq 0) { return }
             if ($exitCode -eq -1073740791) {
@@ -587,9 +613,10 @@ $ConfigPath = $script:ConfigPath
 $UpstreamRepo = Get-ConfigValue $Config "upstreamRepo" $UpstreamRepo
 
 Write-Step "环境预检"
-foreach ($cmd in @("node", $Npx)) {
+foreach ($cmd in @("node", $Npm)) {
     if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) { throw "找不到命令 $cmd，请先安装 Node.js 20+。" }
 }
+if (-not $PreflightOnly) { Initialize-Wrangler }
 Invoke-InteractiveSetup $Config
 $adminToken = Get-ConfigValue $Config "adminToken" ""
 if (-not $Interactive -and $env:ZJMF_ADMIN_TOKEN) { $adminToken = $env:ZJMF_ADMIN_TOKEN }
