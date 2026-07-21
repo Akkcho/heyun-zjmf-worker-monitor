@@ -65,6 +65,8 @@ test('Windows 一键部署自动生成脱敏日志且敏感输入不回显', () 
   assert.match(script, /function Complete-DeploymentLog/);
   assert.match(script, /Start-Transcript/);
   assert.match(script, /部署日志-/);
+  assert.match(script, /\$script:SafeLogPath = Join-Path \$Root "部署日志-/);
+  assert.doesNotMatch(script, /Join-Path \$Root "logs"/);
   assert.match(script, /\[REDACTED\]/);
   assert.match(script, /cfut_/);
   assert.match(script, /github_pat_/);

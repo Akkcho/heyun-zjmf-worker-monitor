@@ -55,10 +55,8 @@ function Write-Step([string]$Message) { Write-Host ""; Write-Host "==> $Message"
 function Write-Note([string]$Message) { Write-Host " -> $Message" -ForegroundColor DarkGray }
 function Start-DeploymentLog {
     try {
-        $logDirectory = Join-Path $Root "logs"
-        New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
         $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-        $script:SafeLogPath = Join-Path $logDirectory "部署日志-$timestamp-$PID.log"
+        $script:SafeLogPath = Join-Path $Root "部署日志-$timestamp-$PID.log"
         $script:RawLogPath = Join-Path ([System.IO.Path]::GetTempPath()) "zjmf-deploy-$timestamp-$PID-$([guid]::NewGuid().ToString('N')).raw.log"
         Start-Transcript -Path $script:RawLogPath -Force -UseMinimalHeader | Out-Null
         $script:TranscriptStarted = $true
