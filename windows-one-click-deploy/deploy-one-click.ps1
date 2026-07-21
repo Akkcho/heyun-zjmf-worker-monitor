@@ -88,7 +88,7 @@ function Get-SensitiveLogValues {
             }
         }
     }
-    foreach ($name in @("adminToken", "versionToken", "webUpdateToken")) {
+    foreach ($name in @("adminToken", "apiAdminToken", "versionToken", "webUpdateToken")) {
         $variable = Get-Variable -Name $name -Scope Script -ErrorAction SilentlyContinue
         if ($variable -and -not [string]::IsNullOrWhiteSpace([string]$variable.Value)) { $values.Add([string]$variable.Value) }
     }
@@ -187,10 +187,10 @@ function Read-OptionalSecret([string]$Prompt) {
 }
 function Read-AdminTokenWithConfirmation {
     while ($true) {
-        $first = Read-OptionalSecret "请输入 ZJMF_ADMIN_TOKEN 网站密码（直接回车使用默认密码）"
-        $second = Read-OptionalSecret "请再次输入 ZJMF_ADMIN_TOKEN 网站密码"
+        $first = Read-OptionalSecret "请输入当前管理后台网站密码（首次部署直接回车使用默认密码 admin）"
+        $second = Read-OptionalSecret "请再次输入当前管理后台网站密码"
         if ([string]::IsNullOrWhiteSpace($first) -and [string]::IsNullOrWhiteSpace($second)) { return "admin" }
-        if ($first -eq $second -and -not [string]::IsNullOrWhiteSpace($first)) { return $first }
+        if ($first -ceq $second -and -not [string]::IsNullOrWhiteSpace($first)) { return $first }
         Write-Host "两次输入不一致，请重新输入。" -ForegroundColor Yellow
     }
 }
@@ -603,16 +603,52 @@ function Post-Admin($BaseUrl, $Token, [string]$Path, $Body) {
         return $false
     }
 }
+function Get-HttpStatusCode($ErrorRecord) {
+    try {
+        $statusCode = $ErrorRecord.Exception.Response.StatusCode
+        if ($null -ne $statusCode) { return [int]$statusCode }
+    } catch {}
+    $message = [string]$ErrorRecord.Exception.Message
+    if ($message -match '(?<!\d)(401|403|404|429|5\d\d)(?!\d)') { return [int]$matches[1] }
+    return 0
+}
 function Wait-AdminApiReady($BaseUrl, $Token) {
     Write-Step "等待管理接口就绪"
     $maxAttempts = 30
+    $initialToken = $Token
+    $unauthorizedAttempts = 0
+    $credentialPrompted = $false
     for ($i = 1; $i -le $maxAttempts; $i++) {
         try {
             Invoke-RestMethod -Method Get -Uri "$BaseUrl/api/admin/overview" -Headers @{ Authorization = "Bearer $Token" } -TimeoutSec 30 | Out-Null
             Write-Note "管理接口已就绪。"
-            return $true
+            return [pscustomobject]@{ Ready = $true; Token = $Token; TokenChanged = ($Token -cne $initialToken) }
         } catch {
             $message = $_.Exception.Message
+            $statusCode = Get-HttpStatusCode $_
+            if ($statusCode -eq 401) {
+                $unauthorizedAttempts++
+                if ($Interactive -and -not $credentialPrompted) {
+                    Write-Host "管理接口返回 401。若曾在管理后台修改密码，首次部署密码已经失效。" -ForegroundColor Yellow
+                    $currentAdminToken = Read-OptionalSecret "请输入当前管理后台网站密码（不是首次部署密码；直接回车跳过自动初始化）"
+                    $credentialPrompted = $true
+                    if ([string]::IsNullOrWhiteSpace($currentAdminToken)) {
+                        Write-Host "已跳过自动初始化。Worker 已部署，可使用当前网站密码登录 /admin。" -ForegroundColor Yellow
+                        return [pscustomobject]@{ Ready = $false; Token = $Token; TokenChanged = $false }
+                    }
+                    $Token = $currentAdminToken
+                    $unauthorizedAttempts = 0
+                    Write-Note "已改用当前网站密码重新验证管理接口。"
+                    continue
+                }
+                if ($unauthorizedAttempts -ge 3) {
+                    Write-Host "警告：当前网站密码连续被拒绝（401），停止等待。请使用管理后台修改后的当前密码重新部署。" -ForegroundColor Yellow
+                    return [pscustomobject]@{ Ready = $false; Token = $Token; TokenChanged = ($Token -cne $initialToken) }
+                }
+                Write-Note "管理接口拒绝当前网站密码（401），第 $unauthorizedAttempts/3 次重试。"
+                Start-Sleep -Seconds 6
+                continue
+            }
             if ($message -match "HttpClient\.Timeout|timed out|operation has timed out|请求超时|超时") {
                 $message = "请求响应超时，Worker 可能仍在冷启动或部署传播中，继续重试"
             }
@@ -621,7 +657,7 @@ function Wait-AdminApiReady($BaseUrl, $Token) {
         }
     }
     Write-Host "警告：管理接口暂未就绪，跳过自动写入初始化配置；可稍后重走脚本或到 /admin 手动补齐。" -ForegroundColor Yellow
-    return $false
+    return [pscustomobject]@{ Ready = $false; Token = $Token; TokenChanged = ($Token -cne $initialToken) }
 }
 function Get-WorkersDevUrl([string]$WorkerName, $Config) {
     $accountId = Get-ConfigValue $Config "cloudflareAccountId" $env:CLOUDFLARE_ACCOUNT_ID
@@ -759,8 +795,18 @@ if (-not $workerUrl) {
 }
 
 if (-not $SkipSeed -and $workerUrl) {
-    if (Wait-AdminApiReady $workerUrl $adminToken) {
-        Seed-MonitorConfig $workerUrl $adminToken $Config
+    $adminReady = Wait-AdminApiReady $workerUrl $adminToken
+    if ($adminReady.Ready) {
+        $apiAdminToken = [string]$adminReady.Token
+        if ($adminReady.TokenChanged) {
+            Write-Step "同步当前管理后台密码"
+            Invoke-CommandLine (Get-WranglerCommand @("secret", "put", "ADMIN_TOKEN")) $workerRoot $apiAdminToken | Out-Null
+            $adminToken = $apiAdminToken
+            $Config.adminToken = $apiAdminToken
+            Save-Config $Config
+            Write-Note "当前网站密码已同步到 Worker Secret 和本地配置。"
+        }
+        Seed-MonitorConfig $workerUrl $apiAdminToken $Config
     }
 }
 

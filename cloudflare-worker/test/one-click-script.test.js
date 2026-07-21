@@ -133,13 +133,28 @@ test('一键部署写入配置前等待新版管理接口就绪并隐藏布尔�
   const script = readUtf8('deploy-one-click.ps1');
 
   assert.match(script, /function Wait-AdminApiReady/);
-  assert.match(script, /Wait-AdminApiReady \$workerUrl \$adminToken/);
+  assert.match(script, /\$adminReady = Wait-AdminApiReady \$workerUrl \$adminToken/);
   assert.match(script, /\$maxAttempts = 30/);
   assert.match(script, /-TimeoutSec 30/);
   assert.match(script, /冷启动或部署传播中/);
   assert.doesNotMatch(script, /-TimeoutSec 15/);
   assert.match(script, /\$null = Post-Admin \$BaseUrl \$AdminToken "\/api\/admin\/settings"/);
   assert.doesNotMatch(script, /if \(\$githubRepo\) \{ Post-Admin \$BaseUrl \$AdminToken/);
+});
+
+test('一键部署遇到 401 时改用当前网站密码而不是首次部署密码', () => {
+  const script = readUtf8('deploy-one-click.ps1');
+
+  assert.match(script, /function Get-HttpStatusCode/);
+  assert.match(script, /if \(\$statusCode -eq 401\)/);
+  assert.match(script, /首次部署密码已经失效/);
+  assert.match(script, /请输入当前管理后台网站密码（不是首次部署密码/);
+  assert.match(script, /\$apiAdminToken = \[string\]\$adminReady\.Token/);
+  assert.match(script, /TokenChanged = \(\$Token -cne \$initialToken\)/);
+  assert.match(script, /\$first -ceq \$second/);
+  assert.match(script, /Seed-MonitorConfig \$workerUrl \$apiAdminToken \$Config/);
+  assert.match(script, /当前网站密码已同步到 Worker Secret 和本地配置/);
+  assert.doesNotMatch(script, /Seed-MonitorConfig \$workerUrl \$adminToken \$Config/);
 });
 
 test('D1 迁移遇到瞬时 fetch failed 时自动重试', () => {
