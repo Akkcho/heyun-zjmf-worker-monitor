@@ -46,7 +46,23 @@ function checkMethod(server) {
 }
 
 function availability(server) {
-  return (server.state || 'unknown') === 'healthy' ? '100.000%' : '0.000%';
+  const history = Array.isArray(server.daily_history) ? server.daily_history.slice(-30) : [];
+  let totalChecks = 0;
+  let totalFailures = 0;
+
+  for (const day of history) {
+    const checks = Number(day.checks);
+    if (!Number.isFinite(checks) || checks <= 0) continue;
+
+    const failures = Number(day.failures);
+    totalChecks += checks;
+    totalFailures += Number.isFinite(failures)
+      ? Math.min(checks, Math.max(0, failures))
+      : 0;
+  }
+
+  if (totalChecks === 0) return '--';
+  return `${(((totalChecks - totalFailures) / totalChecks) * 100).toFixed(3)}%`;
 }
 
 function duration(seconds) {
