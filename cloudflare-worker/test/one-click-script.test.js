@@ -57,7 +57,7 @@ test('Windows 一键部署使用独立缓存安装并复用 Wrangler CLI', () =>
   assert.match(prepare, /execFileSync\(process\.execPath, \[wranglerCliPath, \.\.\.args\]/);
 });
 
-test('Windows 一键部署自动生成脱敏日志且敏感输入不回显', () => {
+test('Windows 一键部署自动生成脱敏日志且 Cloudflare Token 输入保持可见', () => {
   const script = readUtf8('deploy-one-click.ps1');
 
   assert.match(script, /function Start-DeploymentLog/);
@@ -70,9 +70,8 @@ test('Windows 一键部署自动生成脱敏日志且敏感输入不回显', () 
   assert.match(script, /\[REDACTED\]/);
   assert.match(script, /cfut_/);
   assert.match(script, /github_pat_/);
-  assert.match(script, /Read-RequiredSecret/);
-  assert.match(script, /CLOUDFLARE_API_TOKEN = Read-RequiredSecret/);
-  assert.doesNotMatch(script, /CLOUDFLARE_API_TOKEN = Read-RequiredText/);
+  assert.match(script, /CLOUDFLARE_API_TOKEN = Read-RequiredText/);
+  assert.doesNotMatch(script, /CLOUDFLARE_API_TOKEN = Read-RequiredSecret/);
   assert.doesNotMatch(script, /默认 admin|密码：admin/);
   assert.match(script, /trap \{[\s\S]*Complete-DeploymentLog[\s\S]*exit 1 \}/);
 });

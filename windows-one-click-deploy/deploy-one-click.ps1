@@ -185,12 +185,6 @@ function Read-OptionalSecret([string]$Prompt) {
     if ($null -eq $secure) { return "" }
     return (ConvertTo-PlainText $secure).Trim()
 }
-function Read-RequiredSecret([string]$Prompt) {
-    do {
-        $value = Read-OptionalSecret $Prompt
-    } while ([string]::IsNullOrWhiteSpace($value))
-    return $value
-}
 function Read-AdminTokenWithConfirmation {
     while ($true) {
         $first = Read-OptionalSecret "请输入 ZJMF_ADMIN_TOKEN 网站密码（直接回车使用默认密码）"
@@ -515,7 +509,7 @@ function Invoke-InteractiveSetup($Config) {
     if (-not $Interactive) { return }
     Show-InteractiveGuide
     if ([string]::IsNullOrWhiteSpace($env:CLOUDFLARE_API_TOKEN)) {
-        $env:CLOUDFLARE_API_TOKEN = Read-RequiredSecret "请输入 Cloudflare API Token（输入内容不会显示）"
+        $env:CLOUDFLARE_API_TOKEN = Read-RequiredText "请输入 Cloudflare API Token"
     }
     $whoami = ""
     try { $whoami = Invoke-CommandLine (Get-WranglerCommand @("whoami")) } catch {}
