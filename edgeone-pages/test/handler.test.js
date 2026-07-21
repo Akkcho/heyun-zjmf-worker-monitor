@@ -46,6 +46,16 @@ test('EdgeOne handler 使用 KV 管理接口', async () => {
   assert.equal(data.ok, true);
 });
 
+test('空的 ADMIN_TOKEN 仍会回退到默认 admin', async () => {
+  const kv = new MemoryKV();
+  const env = { ADMIN_TOKEN: '', ZJMF_KV: kv };
+  const res = await handleEdgeOneRequest(new Request('https://edgeone.example/api/admin/overview', {
+    headers: { authorization: 'Bearer admin' },
+  }), env);
+
+  assert.equal(res.status, 200);
+});
+
 test('EdgeOne handler 支持全局 KV 绑定变量', async () => {
   const kv = new MemoryKV();
   const previous = globalThis.ZJMF_KV;
@@ -582,6 +592,34 @@ test('EdgeOne 公共状态接口隐藏不在状态页显示的服务器', async 
 
   assert.equal(res.status, 200);
   assert.equal(data.servers.length, 0);
+});
+
+test('EdgeOne 公共状态接口不返回服务器账号痕迹', async () => {
+  const kv = new MemoryKV();
+  const env = { ADMIN_TOKEN: 'admin', ZJMF_KV: kv };
+  await handleEdgeOneRequest(new Request('https://edgeone.example/api/admin/setup', {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin', 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      providers: [{ name: 'heyunidc', display_name: '核云', api_base_url: 'https://api.example/v1', api_account: 'demo@example.com', api_password: 'secret' }],
+      servers: [{ id: '1001', name: '203.0.113.10', provider: 'heyunidc', visible_on_status: true }],
+      settings: {},
+      notification: { enabled: false },
+    }),
+  }), env);
+  const res = await handleEdgeOneRequest(new Request('https://edgeone.example/api/status'), env);
+  const data = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(data.servers[0].name, '服务器 1');
+  assert.equal(data.servers[0].id, undefined);
+  assert.equal(data.servers[0].remote_id, undefined);
+  assert.equal(data.servers[0].provider, undefined);
+  assert.equal(data.servers[0].ip, undefined);
+  assert.equal(data.servers[0].http_url, undefined);
+  assert.equal(data.servers[0].tcp_host, undefined);
+  assert.equal(data.servers[0].events[0]?.server_id, undefined);
+  assert.doesNotMatch(JSON.stringify(data), /203\.0\.113\.10|1001|api\.example|heyunidc/);
 });
 
 test('EdgeOne 状态页包含可点击的故障明细弹窗', async () => {

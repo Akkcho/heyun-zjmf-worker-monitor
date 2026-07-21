@@ -79,7 +79,25 @@ function serverDisplayName(server) {
   return isIpAddress(server.name) || isIpAddress(server.ip) ? `服务器 #${server.id}` : server.name;
 }
 
-function publicServer(server) {
+function publicServer(server, index = 0) {
+  const {
+    id: _id,
+    remote_id: _remoteId,
+    provider: _provider,
+    ip: _ip,
+    http_url: _httpUrl,
+    tcp_host: _tcpHost,
+    visible_on_status: _visible,
+    ...rest
+  } = server;
+  const name = String(server.name || '').trim();
+  return {
+    ...rest,
+    name: name && !isIpAddress(name) ? name : `服务器 ${index + 1}`,
+  };
+}
+
+function statusServer(server) {
   const { ip: _ip, http_url: _httpUrl, tcp_host: _tcpHost, visible_on_status: _visible, ...rest } = server;
   return { ...rest, name: serverDisplayName(server) };
 }
@@ -90,8 +108,8 @@ function adminServer(server) {
 }
 
 function publicEvent(event) {
-  const { id, server_id, old_state, new_state, label, level, created_at } = event;
-  return { id, server_id, old_state, new_state, label, level, created_at };
+  const { id, old_state, new_state, label, level, created_at } = event;
+  return { id, old_state, new_state, label, level, created_at };
 }
 
 function adminServers(servers, status) {
@@ -210,7 +228,7 @@ function adminHost(host) {
 
 async function publicStatus(repo, settings = null) {
   const resolvedSettings = settings || await repo.getSettings();
-  const servers = (await repo.listStatus()).filter(visibleOnStatus).map(publicServer);
+  const servers = (await repo.listStatus()).filter(visibleOnStatus);
   const groups = await repo.listGroups();
   const groupMap = new Map(groups.map((group) => [String(group.id), group]));
   const ids = servers.map((server) => String(server.id));
@@ -220,8 +238,8 @@ async function publicStatus(repo, settings = null) {
   for (const server of servers) {
     recent.set(String(server.id), await repo.listRecentChecks(server.id));
   }
-  return servers.map((server) => ({
-    ...server,
+  return servers.map((server, index) => ({
+    ...publicServer(server, index),
     group_name: groupMap.get(String(server.group_id || ''))?.name || '',
     group_sort_order: Number(groupMap.get(String(server.group_id || ''))?.sort_order ?? Number.MAX_SAFE_INTEGER),
     daily_history: daily.get(String(server.id)) || [],
@@ -259,10 +277,9 @@ export async function handleRequest(request, env) {
 
   if (!url.pathname.startsWith('/api/admin/')) return json({ error: 'NOT_FOUND' }, 404);
   if (!(await isAuthorized(request, env, repo))) return json({ error: 'UNAUTHORIZED' }, 401);
-
   if (url.pathname === '/api/admin/overview' && request.method === 'GET') {
     const settings = await repo.getSettings();
-    const status = (await repo.listStatus()).map(publicServer);
+    const status = (await repo.listStatus()).map(statusServer);
     return json({
       settings: {
         ...settings,

@@ -217,7 +217,7 @@ class FakeD1 {
 
 function env(overrides = {}) {
   return {
-    ADMIN_TOKEN: 'admin-password',
+    ADMIN_TOKEN: Object.hasOwn(overrides, 'ADMIN_TOKEN') ? overrides.ADMIN_TOKEN : 'admin-password',
     GITHUB_TOKEN: overrides.GITHUB_TOKEN,
     GITHUB_REPOSITORY: overrides.GITHUB_REPOSITORY || 'loqwe/heyun-zjmf-worker-monitor',
     GITHUB_BRANCH: overrides.GITHUB_BRANCH || 'main',
@@ -288,6 +288,15 @@ test('管理接口缺少 ZJMF_ADMIN_TOKEN 对应的 Bearer Token 时拒绝访问
   const res = await handleRequest(new Request('https://worker.example/api/admin/overview'), env());
 
   assert.equal(res.status, 401);
+});
+
+test('空的 ADMIN_TOKEN 仍会回退到默认 admin', async () => {
+  const testEnv = env({ ADMIN_TOKEN: '' });
+  const res = await handleRequest(new Request('https://worker.example/api/admin/overview', {
+    headers: { authorization: 'Bearer admin' },
+  }), testEnv);
+
+  assert.equal(res.status, 200);
 });
 
 test('D1 修改后的管理密码优先于部署时 ADMIN_TOKEN', async () => {
@@ -614,17 +623,21 @@ test('管理概览优先返回启用服务器，避免表单默认选中旧禁�
   assert.equal(data.servers[0].enabled, true);
 });
 
-test('公共状态接口不返回服务器 IP', async () => {
+test('公共状态接口不返回服务器账号痕迹', async () => {
   const res = await handleRequest(new Request('https://worker.example/api/status'), env());
   const text = await res.text();
   const data = JSON.parse(text);
 
   assert.equal(res.status, 200);
-  assert.equal(data.servers[0].name, '服务器 #8564');
+  assert.equal(data.servers[0].name, '服务器 1');
+  assert.equal(data.servers[0].id, undefined);
+  assert.equal(data.servers[0].remote_id, undefined);
+  assert.equal(data.servers[0].provider, undefined);
   assert.equal(data.servers[0].ip, undefined);
   assert.equal(data.servers[0].http_url, undefined);
   assert.equal(data.servers[0].tcp_host, undefined);
-  assert.doesNotMatch(text, /203\.0\.113\.10/);
+  assert.equal(data.servers[0].events[0].server_id, undefined);
+  assert.doesNotMatch(text, /203\.0\.113\.10|8564|api\.example|provider-secret|pushplus-secret|heyunidc/);
 });
 
 test('公共状态接口隐藏不在状态页显示的服务器', async () => {
