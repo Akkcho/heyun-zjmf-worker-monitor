@@ -223,6 +223,13 @@ test('Cloudflare 初始化弹窗由遮罩层滚动并可到达底部操作区', 
   assert.match(html, /@media\(max-width:760px\)\{#setupWizardModal\{padding:12px\}#setupWizardModal \.setup-modal\{padding:18px\}\}/);
 });
 
+test('Cloudflare 初始化向导不再把 996 列为常见 TCP 端口', () => {
+  const html = renderAdminPage();
+
+  assert.match(html, /常见默认值是 443 或 80/);
+  assert.doesNotMatch(html, /443、80 或 996/);
+});
+
 test('监控项弹窗可以快速新增 IDC 并自动选中', () => {
   const html = renderAdminPage();
 
