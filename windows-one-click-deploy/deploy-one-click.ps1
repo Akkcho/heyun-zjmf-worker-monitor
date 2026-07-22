@@ -41,6 +41,7 @@ $ErrorActionPreference = "Stop"
 
 $Npm = if (Get-Command "npm.cmd" -ErrorAction SilentlyContinue) { "npm.cmd" } else { "npm" }
 $WranglerPackage = "wrangler@$WranglerVersion"
+$script:WranglerToolsRoot = Join-Path $CacheRoot "tools"
 $script:WranglerToolRoot = Join-Path $CacheRoot "tools\wrangler-$WranglerVersion"
 $script:WranglerCliPath = Join-Path $script:WranglerToolRoot "node_modules\wrangler\bin\wrangler.js"
 $script:WranglerNpmCache = Join-Path $CacheRoot "npm-cache"
@@ -320,26 +321,76 @@ function Get-DefaultConfigText {
 function Get-WranglerCommand([string[]]$SubCommands) {
     return @("node", $script:WranglerCliPath) + $SubCommands
 }
-function Initialize-Wrangler {
-    if (Test-Path -LiteralPath $script:WranglerCliPath) {
-        $env:WRANGLER_CLI_PATH = $script:WranglerCliPath
-        Write-Note "复用已安装的 Wrangler $WranglerVersion。"
-        return
-    }
-    Write-Step "准备 Wrangler $WranglerVersion"
-    New-Item -ItemType Directory -Path $script:WranglerToolRoot -Force | Out-Null
-    New-Item -ItemType Directory -Path $script:WranglerNpmCache -Force | Out-Null
-    $installCommand = @($Npm, "install", "--prefix", $script:WranglerToolRoot, "--cache", $script:WranglerNpmCache, "--no-save", "--no-package-lock", "--no-audit", "--no-fund", $WranglerPackage)
+function Test-WranglerCli([string]$CliPath) {
+    if (-not (Test-Path -LiteralPath $CliPath -PathType Leaf)) { return $false }
     try {
-        Invoke-CommandLineWithRetry $installCommand $Root $null 3 | Out-Null
+        $global:LASTEXITCODE = 0
+        $versionOutput = & node $CliPath --version 2>&1 | Out-String -Width 4096
+        if ($LASTEXITCODE -ne 0) { return $false }
+        return $versionOutput.Trim() -eq $WranglerVersion
     } catch {
-        if (-not (Test-Path -LiteralPath $script:WranglerCliPath)) { throw }
-        Write-Note "npm 清理缓存时返回警告，但 Wrangler 已安装，继续部署。"
+        return $false
     }
-    if (-not (Test-Path -LiteralPath $script:WranglerCliPath)) {
-        throw "Wrangler 安装失败，请关闭其他 Node.js/npm 窗口后重新运行。"
-    }
+}
+function Use-WranglerInstall([string]$ToolRoot) {
+    $script:WranglerToolRoot = $ToolRoot
+    $script:WranglerCliPath = Join-Path $ToolRoot "node_modules\wrangler\bin\wrangler.js"
     $env:WRANGLER_CLI_PATH = $script:WranglerCliPath
+}
+function Initialize-Wrangler {
+    New-Item -ItemType Directory -Path $script:WranglerToolsRoot -Force | Out-Null
+
+    $candidateRoots = [System.Collections.Generic.List[string]]::new()
+    $candidateRoots.Add($script:WranglerToolRoot)
+    foreach ($directory in @(Get-ChildItem -LiteralPath $script:WranglerToolsRoot -Directory -Filter "wrangler-$WranglerVersion*" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
+        if (-not $candidateRoots.Contains($directory.FullName)) { $candidateRoots.Add($directory.FullName) }
+    }
+    foreach ($candidateRoot in $candidateRoots) {
+        $candidateCli = Join-Path $candidateRoot "node_modules\wrangler\bin\wrangler.js"
+        if (Test-WranglerCli $candidateCli) {
+            Use-WranglerInstall $candidateRoot
+            Write-Note "复用已验证的 Wrangler $WranglerVersion。"
+            return
+        }
+    }
+
+    Write-Step "准备 Wrangler $WranglerVersion"
+    $failures = [System.Collections.Generic.List[string]]::new()
+    $maxAttempts = 3
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $nonce = [guid]::NewGuid().ToString("N").Substring(0, 8)
+        $installName = "wrangler-$WranglerVersion-install-$PID-$attempt-$nonce"
+        $installRoot = Join-Path $script:WranglerToolsRoot $installName
+        $installCache = Join-Path $CacheRoot "npm-cache\wrangler-$WranglerVersion-install-$PID-$attempt-$nonce"
+        $installCommand = @($Npm, "install", "--prefix", $installRoot, "--cache", $installCache, "--no-save", "--no-package-lock", "--no-audit", "--no-fund", $WranglerPackage)
+        $installError = ""
+
+        Write-Note "Wrangler 安装尝试 $attempt/$maxAttempts（使用全新缓存目录）。"
+        try {
+            Invoke-CommandLineStreaming $installCommand $Root | Out-Null
+        } catch {
+            $installError = $_.Exception.Message
+        }
+
+        $installCli = Join-Path $installRoot "node_modules\wrangler\bin\wrangler.js"
+        if (Test-WranglerCli $installCli) {
+            Use-WranglerInstall $installRoot
+            if ($installError) { Write-Note "npm 清理阶段返回错误，但 Wrangler CLI 已验证可用，继续部署。" }
+            return
+        }
+
+        if ([string]::IsNullOrWhiteSpace($installError)) {
+            $installError = "npm 命令已结束，但生成的 Wrangler CLI 无法运行或版本不匹配。"
+        }
+        $failures.Add("第 $attempt/$maxAttempts 次安装失败：`r`n$installError")
+        if ($attempt -lt $maxAttempts) {
+            Write-Host "当前安装目录不可用，将切换到新的目录重试。" -ForegroundColor Yellow
+            Start-Sleep -Seconds ($attempt * 2)
+        }
+    }
+
+    $details = $failures -join "`r`n`r`n"
+    throw "Wrangler 安装失败，脚本已改用 3 个全新目录重试。请把当前文件夹中的脱敏部署日志发给维护者。`r`n`r`n$details"
 }
 function Get-CloudflareWhoamiAccountIds([string]$Output) {
     $ids = @()
@@ -363,6 +414,26 @@ function Invoke-CommandLine([string[]]$Command, [string]$WorkingDirectory = $Roo
             & $exe @args 2>&1 | Out-String -Width 4096
         }
         $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            throw "命令失败，退出码 $exitCode`n命令: $($Command -join ' ')`n`n完整输出:`n$output"
+        }
+        return $output.Trim()
+    } finally {
+        Pop-Location
+    }
+}
+function Invoke-CommandLineStreaming([string[]]$Command, [string]$WorkingDirectory = $Root) {
+    Push-Location $WorkingDirectory
+    try {
+        $exe = $Command[0]
+        $args = @()
+        if ($Command.Length -gt 1) { $args = $Command[1..($Command.Length - 1)] }
+        Write-Note ("运行: " + ($Command -join " "))
+        $commandOutput = @()
+        $global:LASTEXITCODE = 0
+        & $exe @args 2>&1 | Tee-Object -Variable commandOutput | Out-Host
+        $exitCode = $LASTEXITCODE
+        $output = $commandOutput | Out-String -Width 4096
         if ($exitCode -ne 0) {
             throw "命令失败，退出码 $exitCode`n命令: $($Command -join ' ')`n`n完整输出:`n$output"
         }

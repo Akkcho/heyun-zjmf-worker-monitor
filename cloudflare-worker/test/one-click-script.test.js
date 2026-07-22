@@ -57,6 +57,28 @@ test('Windows 一键部署使用独立缓存安装并复用 Wrangler CLI', () =>
   assert.match(prepare, /execFileSync\(process\.execPath, \[wranglerCliPath, \.\.\.args\]/);
 });
 
+test('Wrangler 固定缓存损坏或被占用时改用新的安装槽位', () => {
+  const script = readUtf8('deploy-one-click.ps1');
+  const initializeFunction = script.match(/function Initialize-Wrangler[\s\S]+?\r?\n}\r?\nfunction Get-CloudflareWhoamiAccountIds/)?.[0] ?? '';
+
+  assert.match(script, /function Test-WranglerCli/);
+  assert.match(script, /--version/);
+  assert.match(initializeFunction, /Get-ChildItem[\s\S]+wrangler-\$WranglerVersion\*/);
+  assert.match(initializeFunction, /wrangler-\$WranglerVersion-install-\$PID-\$attempt-/);
+  assert.match(initializeFunction, /npm-cache[\\/]wrangler-\$WranglerVersion-install-/);
+  assert.match(initializeFunction, /Invoke-CommandLineStreaming \$installCommand/);
+  assert.doesNotMatch(initializeFunction, /Invoke-CommandLineWithRetry \$installCommand/);
+});
+
+test('Wrangler 安装实时显示并保留 npm 完整输出', () => {
+  const script = readUtf8('deploy-one-click.ps1');
+  const streamingFunction = script.match(/function Invoke-CommandLineStreaming[\s\S]+?\r?\n}\r?\nfunction Invoke-CommandLineWithRetry/)?.[0] ?? '';
+
+  assert.match(streamingFunction, /Tee-Object -Variable commandOutput \| Out-Host/);
+  assert.match(streamingFunction, /完整输出/);
+  assert.match(streamingFunction, /return \$output\.Trim\(\)/);
+});
+
 test('Windows 一键部署自动生成脱敏日志且 Cloudflare Token 输入保持可见', () => {
   const script = readUtf8('deploy-one-click.ps1');
 
