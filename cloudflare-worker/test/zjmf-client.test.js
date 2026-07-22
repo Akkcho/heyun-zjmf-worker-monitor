@@ -118,5 +118,31 @@ test('ZJMF 请求网络异常时返回 null 而不是抛出', async () => {
 
   const client = new ZjmfClient(provider, fetcher, 60);
   assert.equal(await client.getStatus('4075', 1000), null);
-  assert.equal(client.lastError, 'network blocked');
+  assert.match(client.lastError, /IDC API 网络连接失败/);
+});
+
+test('ZJMF 请求达到超时时间后返回明确中文原因', async () => {
+  const fetcher = async (_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted', 'AbortError')), { once: true });
+  });
+  const provider = { api_base_url: 'https://example.test/v1', api_account: 'acct', api_password: 'key' };
+  const client = new ZjmfClient(provider, fetcher, 0.01);
+
+  assert.equal(await client.getHosts(1000), null);
+  assert.match(client.lastError, /IDC API 请求超时（0\.01 秒）/);
+  assert.match(client.lastError, /当前部署平台/);
+  assert.doesNotMatch(client.lastError, /operation was aborted/i);
+});
+
+test('ZJMF 网络连接异常返回可操作的中文原因', async () => {
+  const fetcher = async () => {
+    throw new TypeError('fetch failed: connect timeout');
+  };
+  const provider = { api_base_url: 'https://example.test/v1', api_account: 'acct', api_password: 'key' };
+  const client = new ZjmfClient(provider, fetcher, 60);
+
+  assert.equal(await client.getHosts(1000), null);
+  assert.match(client.lastError, /IDC API 网络连接失败/);
+  assert.match(client.lastError, /当前部署平台/);
+  assert.doesNotMatch(client.lastError, /fetch failed/i);
 });

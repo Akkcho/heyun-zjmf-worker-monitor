@@ -55,8 +55,23 @@ export function extractStatus(data) {
 
 function withTimeout(timeoutSeconds) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
-  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+  let expired = false;
+  const timer = setTimeout(() => {
+    expired = true;
+    controller.abort();
+  }, timeoutSeconds * 1000);
+  return { signal: controller.signal, clear: () => clearTimeout(timer), expired: () => expired };
+}
+
+function requestErrorMessage(error, timeoutSeconds, timedOut) {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (timedOut || error?.name === 'AbortError' || /\babort(?:ed)?\b/i.test(raw)) {
+    return `IDC API 请求超时（${timeoutSeconds} 秒），请确认 API 地址可从当前部署平台直接访问。`;
+  }
+  if (/fetch failed|connect(?:ion)?(?: timed? ?out| refused| reset)?|network|socket|econn|etimedout/i.test(raw)) {
+    return 'IDC API 网络连接失败，请确认 API 地址可从当前部署平台直接访问。';
+  }
+  return raw;
 }
 
 async function readJson(response) {
@@ -113,7 +128,7 @@ export class ZjmfClient {
       this.lastError = '';
       return await this.fetcher(url, { ...init, signal: timeout.signal });
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
+      this.lastError = requestErrorMessage(error, this.apiTimeout, timeout.expired());
       return null;
     } finally {
       timeout.clear();

@@ -345,12 +345,13 @@ export async function handleRequest(request, env) {
     if (!apiBaseUrl || !apiAccount || !apiPassword) {
       return json({ error: 'INVALID_PROVIDER' }, 400);
     }
+    const settings = await repo.getSettings();
     const client = new ZjmfClient({
       ...existing,
       api_base_url: normalizeApiBaseUrl(apiBaseUrl),
       api_account: apiAccount,
       api_password: apiPassword,
-    }, env.fetcher || ((input, init) => fetch(input, init)));
+    }, env.fetcher || ((input, init) => fetch(input, init)), settings.api_timeout);
     const hosts = await client.getHosts(Math.floor(Date.now() / 1000));
     if (!hosts) return json({ error: client.lastError || 'HOSTS_FETCH_FAILED' }, 502);
     return json({ hosts: hosts.map(adminHost).filter((host) => host.id) });
