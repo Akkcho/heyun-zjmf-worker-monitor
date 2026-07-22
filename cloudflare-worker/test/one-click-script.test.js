@@ -49,7 +49,7 @@ test('Windows 一键部署使用独立缓存安装并复用 Wrangler CLI', () =>
 
   assert.match(script, /function Initialize-Wrangler/);
   assert.match(script, /npm-cache/);
-  assert.match(script, /@\(\$Npm, "install", "--prefix"/);
+  assert.match(script, /\$installArgs = @\("install", "--prefix"/);
   assert.match(script, /\$env:WRANGLER_CLI_PATH = \$script:WranglerCliPath/);
   assert.match(script, /return @\(\$script:NodeCommand, \$script:WranglerCliPath\) \+ \$SubCommands/);
   assert.doesNotMatch(script, /return @\(\$Npx, "--yes", \$WranglerPackage\)/);
@@ -95,8 +95,10 @@ test('Windows ARM64 自动改用便携版 Node x64 运行 Wrangler', () => {
   assert.match(runtimeFunction, /Expand-Archive/);
   assert.match(runtimeFunction, /Get-FileHash[\s\S]+SHA256/);
   assert.match(runtimeFunction, /\$actualHash -ceq \$PortableNodeSha256/);
-  assert.match(runtimeFunction, /\$script:NodeCommand = \$portableNode/);
-  assert.match(runtimeFunction, /\$script:Npm = \$portableNpm/);
+  assert.match(script, /\$script:NodeCommand = \$portableNode/);
+  assert.match(script, /\$script:NpmCliPath = Join-Path \$PortableRoot "node_modules\\npm\\bin\\npm-cli\.js"/);
+  assert.match(script, /\$env:Path = "\$PortableRoot;\$env:Path"/);
+  assert.match(script, /@\(\$script:NodeCommand, \$script:NpmCliPath\) \+ \$installArgs/);
   assert.match(script, /Initialize-WranglerNodeRuntime\r?\n\s*Initialize-Wrangler/);
 });
 
@@ -165,6 +167,13 @@ test('步骤2下载辅助文件时会重试瞬时网络错误', () => {
 
   assert.match(deployer, /\$attempt -lt 3/);
   assert.match(deployer, /Start-Sleep -Seconds/);
+});
+
+test('步骤2不再由 cmd 输出容易乱码拆行的重复中文准备说明', () => {
+  const deployer = readUtf8('步骤2-一键部署.bat');
+
+  assert.doesNotMatch(deployer, /准备方式：|Cloudflare Token：打开|账户 ID：复制|GitHub 仓库地址：复制/);
+  assert.match(readUtf8('deploy-one-click.ps1'), /function Show-InteractiveGuide/);
 });
 
 test('步骤1会刷新部署脚本，源码下载优先使用 codeload', () => {

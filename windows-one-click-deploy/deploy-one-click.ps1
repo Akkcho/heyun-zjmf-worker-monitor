@@ -43,6 +43,7 @@ $Npm = if (Get-Command "npm.cmd" -ErrorAction SilentlyContinue) { "npm.cmd" } el
 $PortableNodeVersion = "22.22.0"
 $PortableNodeSha256 = "c97fa376d2becdc8863fcd3ca2dd9a83a9f3468ee7ccf7a6d076ec66a645c77a"
 $script:NodeCommand = "node"
+$script:NpmCliPath = ""
 $WranglerPackage = "wrangler@$WranglerVersion"
 $script:WranglerToolsRoot = Join-Path $CacheRoot "tools"
 $script:WranglerToolRoot = Join-Path $CacheRoot "tools\wrangler-$WranglerVersion"
@@ -321,6 +322,19 @@ function Get-DefaultConfigText {
 }
 '@
 }
+function Set-PortableNodeRuntime([string]$PortableRoot) {
+    $portableNode = Join-Path $PortableRoot "node.exe"
+    $script:NpmCliPath = Join-Path $PortableRoot "node_modules\npm\bin\npm-cli.js"
+    if (-not (Test-Path -LiteralPath $portableNode -PathType Leaf) -or -not (Test-Path -LiteralPath $script:NpmCliPath -PathType Leaf)) {
+        throw "便携版 Node.js x64 文件不完整。"
+    }
+    $script:NodeCommand = $portableNode
+    if (-not (($env:Path -split ';') -contains $PortableRoot)) {
+        $env:Path = "$PortableRoot;$env:Path"
+    }
+    $env:npm_node_execpath = $portableNode
+    $env:npm_execpath = $script:NpmCliPath
+}
 function Initialize-WranglerNodeRuntime {
     $global:LASTEXITCODE = 0
     $runtimeJson = & $script:NodeCommand -p "JSON.stringify({platform:process.platform,arch:process.arch})" 2>&1 | Out-String -Width 4096
@@ -338,13 +352,12 @@ function Initialize-WranglerNodeRuntime {
     }
     foreach ($candidateRoot in $candidateRoots) {
         $portableNode = Join-Path $candidateRoot "node.exe"
-        $portableNpm = Join-Path $candidateRoot "npm.cmd"
-        if (-not (Test-Path -LiteralPath $portableNode -PathType Leaf) -or -not (Test-Path -LiteralPath $portableNpm -PathType Leaf)) { continue }
+        $portableNpmCli = Join-Path $candidateRoot "node_modules\npm\bin\npm-cli.js"
+        if (-not (Test-Path -LiteralPath $portableNode -PathType Leaf) -or -not (Test-Path -LiteralPath $portableNpmCli -PathType Leaf)) { continue }
         $global:LASTEXITCODE = 0
         $portableArch = & $portableNode -p "process.arch" 2>&1 | Out-String -Width 4096
         if ($LASTEXITCODE -eq 0 -and $portableArch.Trim() -eq "x64") {
-            $script:NodeCommand = $portableNode
-            $script:Npm = $portableNpm
+            Set-PortableNodeRuntime $candidateRoot
             Write-Note "复用已验证的便携版 Node.js x64。"
             return
         }
@@ -378,8 +391,8 @@ function Initialize-WranglerNodeRuntime {
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot -Force
     $portableRoot = Join-Path $extractRoot $nodeFolderName
     $portableNode = Join-Path $portableRoot "node.exe"
-    $portableNpm = Join-Path $portableRoot "npm.cmd"
-    if (-not (Test-Path -LiteralPath $portableNode -PathType Leaf) -or -not (Test-Path -LiteralPath $portableNpm -PathType Leaf)) {
+    $portableNpmCli = Join-Path $portableRoot "node_modules\npm\bin\npm-cli.js"
+    if (-not (Test-Path -LiteralPath $portableNode -PathType Leaf) -or -not (Test-Path -LiteralPath $portableNpmCli -PathType Leaf)) {
         throw "便携版 Node.js x64 解压后文件不完整。"
     }
     $global:LASTEXITCODE = 0
@@ -387,8 +400,7 @@ function Initialize-WranglerNodeRuntime {
     if ($LASTEXITCODE -ne 0 -or $portableArch.Trim() -ne "x64") {
         throw "当前 Windows ARM64 环境无法运行 Node.js x64 兼容程序：$portableArch"
     }
-    $script:NodeCommand = $portableNode
-    $script:Npm = $portableNpm
+    Set-PortableNodeRuntime $portableRoot
     Write-Note "便携版 Node.js x64 已准备完成，不会修改系统 Node.js。"
 }
 function Get-WranglerCommand([string[]]$SubCommands) {
@@ -435,7 +447,12 @@ function Initialize-Wrangler {
         $installName = "wrangler-$WranglerVersion-install-$PID-$attempt-$nonce"
         $installRoot = Join-Path $script:WranglerToolsRoot $installName
         $installCache = Join-Path $CacheRoot "npm-cache\wrangler-$WranglerVersion-install-$PID-$attempt-$nonce"
-        $installCommand = @($Npm, "install", "--prefix", $installRoot, "--cache", $installCache, "--no-save", "--no-package-lock", "--no-audit", "--no-fund", $WranglerPackage)
+        $installArgs = @("install", "--prefix", $installRoot, "--cache", $installCache, "--no-save", "--no-package-lock", "--no-audit", "--no-fund", $WranglerPackage)
+        $installCommand = if ($script:NpmCliPath) {
+            @($script:NodeCommand, $script:NpmCliPath) + $installArgs
+        } else {
+            @($Npm) + $installArgs
+        }
         $installError = ""
 
         Write-Note "Wrangler 安装尝试 $attempt/$maxAttempts（使用全新缓存目录）。"
