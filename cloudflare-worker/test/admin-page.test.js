@@ -215,6 +215,14 @@ test('管理后台页面使用 ZJMF_ADMIN_TOKEN 登录且不嵌入真实密码',
   assert.doesNotMatch(html, /showUrl=type==='pushplus'/);
 });
 
+test('Cloudflare 初始化弹窗由遮罩层滚动并可到达底部操作区', () => {
+  const html = renderAdminPage();
+
+  assert.match(html, /#setupWizardModal\{display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch\}/);
+  assert.match(html, /#setupWizardModal \.setup-modal\{width:min\(1180px,100%\);max-height:none;overflow:visible;flex:0 0 auto\}/);
+  assert.match(html, /@media\(max-width:760px\)\{#setupWizardModal\{padding:12px\}#setupWizardModal \.setup-modal\{padding:18px\}\}/);
+});
+
 test('监控项弹窗可以快速新增 IDC 并自动选中', () => {
   const html = renderAdminPage();
 

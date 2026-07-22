@@ -177,8 +177,9 @@ test('管理初始化弹窗支持滚动显示完整内容', async () => {
   const script = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>'));
 
   assert.doesNotThrow(() => new Function(script));
-  assert.match(html, /#setupWizardModal,#notifyModal,#editModal\{align-items:start;overflow:auto\}/);
-  assert.match(html, /#setupWizardModal \.setup-modal\{width:min\(1180px,calc\(100vw - 48px\)\);scrollbar-gutter:stable\}/);
+  assert.match(html, /#setupWizardModal\{display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch\}/);
+  assert.match(html, /#setupWizardModal \.setup-modal\{width:min\(1180px,100%\);max-height:none;overflow:visible;flex:0 0 auto\}/);
+  assert.match(html, /@media\(max-width:760px\)\{#setupWizardModal\{padding:12px\}#setupWizardModal \.setup-modal\{padding:18px\}\}/);
   assert.match(html, /name="visible_on_status" type="hidden" value="false"/);
   const editModalStart = html.indexOf('id="editModal"');
   const editModal = html.slice(editModalStart, html.indexOf('</section>', editModalStart));
