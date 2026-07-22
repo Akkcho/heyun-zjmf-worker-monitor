@@ -51,7 +51,7 @@ test('Windows 一键部署使用独立缓存安装并复用 Wrangler CLI', () =>
   assert.match(script, /npm-cache/);
   assert.match(script, /@\(\$Npm, "install", "--prefix"/);
   assert.match(script, /\$env:WRANGLER_CLI_PATH = \$script:WranglerCliPath/);
-  assert.match(script, /return @\("node", \$script:WranglerCliPath\) \+ \$SubCommands/);
+  assert.match(script, /return @\(\$script:NodeCommand, \$script:WranglerCliPath\) \+ \$SubCommands/);
   assert.doesNotMatch(script, /return @\(\$Npx, "--yes", \$WranglerPackage\)/);
   assert.match(prepare, /process\.env\.WRANGLER_CLI_PATH/);
   assert.match(prepare, /execFileSync\(process\.execPath, \[wranglerCliPath, \.\.\.args\]/);
@@ -77,6 +77,37 @@ test('Wrangler 安装实时显示并保留 npm 完整输出', () => {
   assert.match(streamingFunction, /Tee-Object -Variable commandOutput \| Out-Host/);
   assert.match(streamingFunction, /完整输出/);
   assert.match(streamingFunction, /return \$output\.Trim\(\)/);
+});
+
+test('Windows ARM64 自动改用便携版 Node x64 运行 Wrangler', () => {
+  const script = readUtf8('deploy-one-click.ps1');
+  const runtimeFunction = script.match(/function Initialize-WranglerNodeRuntime[\s\S]+?\r?\n}\r?\nfunction Get-WranglerCommand/)?.[0] ?? '';
+
+  assert.match(script, /\$PortableNodeVersion = "22\.22\.0"/);
+  assert.match(script, /\$PortableNodeSha256 = "c97fa376d2becdc8863fcd3ca2dd9a83a9f3468ee7ccf7a6d076ec66a645c77a"/);
+  assert.match(runtimeFunction, /process\.platform/);
+  assert.match(runtimeFunction, /process\.arch/);
+  assert.match(runtimeFunction, /win32/);
+  assert.match(runtimeFunction, /arm64/);
+  assert.match(runtimeFunction, /\$archiveName = "\$nodeFolderName\.zip"/);
+  assert.match(runtimeFunction, /https:\/\/nodejs\.org\/dist/);
+  assert.match(runtimeFunction, /https:\/\/npmmirror\.com\/mirrors\/node/);
+  assert.match(runtimeFunction, /Expand-Archive/);
+  assert.match(runtimeFunction, /Get-FileHash[\s\S]+SHA256/);
+  assert.match(runtimeFunction, /\$actualHash -ceq \$PortableNodeSha256/);
+  assert.match(runtimeFunction, /\$script:NodeCommand = \$portableNode/);
+  assert.match(runtimeFunction, /\$script:Npm = \$portableNpm/);
+  assert.match(script, /Initialize-WranglerNodeRuntime\r?\n\s*Initialize-Wrangler/);
+});
+
+test('所有 Wrangler 和准备命令统一使用选定的 Node 运行时', () => {
+  const script = readUtf8('deploy-one-click.ps1');
+
+  assert.match(script, /return @\(\$script:NodeCommand, \$script:WranglerCliPath\) \+ \$SubCommands/);
+  assert.match(script, /& \$script:NodeCommand \$CliPath --version/);
+  assert.match(script, /& \$script:NodeCommand \$script:WranglerCliPath deploy/);
+  assert.match(script, /Invoke-CommandLine @\(\$script:NodeCommand, \(Join-Path \$workerRoot "scripts\\prepare-cloudflare\.mjs"\)\)/);
+  assert.doesNotMatch(script, /& node \$script:WranglerCliPath deploy/);
 });
 
 test('Windows 一键部署自动生成脱敏日志且 Cloudflare Token 输入保持可见', () => {

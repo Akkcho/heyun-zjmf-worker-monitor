@@ -40,6 +40,9 @@ $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $Npm = if (Get-Command "npm.cmd" -ErrorAction SilentlyContinue) { "npm.cmd" } else { "npm" }
+$PortableNodeVersion = "22.22.0"
+$PortableNodeSha256 = "c97fa376d2becdc8863fcd3ca2dd9a83a9f3468ee7ccf7a6d076ec66a645c77a"
+$script:NodeCommand = "node"
 $WranglerPackage = "wrangler@$WranglerVersion"
 $script:WranglerToolsRoot = Join-Path $CacheRoot "tools"
 $script:WranglerToolRoot = Join-Path $CacheRoot "tools\wrangler-$WranglerVersion"
@@ -318,14 +321,84 @@ function Get-DefaultConfigText {
 }
 '@
 }
+function Initialize-WranglerNodeRuntime {
+    $global:LASTEXITCODE = 0
+    $runtimeJson = & $script:NodeCommand -p "JSON.stringify({platform:process.platform,arch:process.arch})" 2>&1 | Out-String -Width 4096
+    if ($LASTEXITCODE -ne 0) { throw "无法读取 Node.js 运行环境：$runtimeJson" }
+    $runtime = $runtimeJson.Trim() | ConvertFrom-Json
+    if ($runtime.platform -ne "win32" -or $runtime.arch -ne "arm64") { return }
+
+    Write-Step "检测到 Windows ARM64，准备兼容的 Node.js x64"
+    New-Item -ItemType Directory -Path $script:WranglerToolsRoot -Force | Out-Null
+    $nodeFolderName = "node-v$PortableNodeVersion-win-x64"
+    $candidateRoots = [System.Collections.Generic.List[string]]::new()
+    $candidateRoots.Add((Join-Path $script:WranglerToolsRoot $nodeFolderName))
+    foreach ($directory in @(Get-ChildItem -LiteralPath $script:WranglerToolsRoot -Directory -Filter "$nodeFolderName-install-*" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
+        $candidateRoots.Add((Join-Path $directory.FullName $nodeFolderName))
+    }
+    foreach ($candidateRoot in $candidateRoots) {
+        $portableNode = Join-Path $candidateRoot "node.exe"
+        $portableNpm = Join-Path $candidateRoot "npm.cmd"
+        if (-not (Test-Path -LiteralPath $portableNode -PathType Leaf) -or -not (Test-Path -LiteralPath $portableNpm -PathType Leaf)) { continue }
+        $global:LASTEXITCODE = 0
+        $portableArch = & $portableNode -p "process.arch" 2>&1 | Out-String -Width 4096
+        if ($LASTEXITCODE -eq 0 -and $portableArch.Trim() -eq "x64") {
+            $script:NodeCommand = $portableNode
+            $script:Npm = $portableNpm
+            Write-Note "复用已验证的便携版 Node.js x64。"
+            return
+        }
+    }
+
+    $downloadRoot = Join-Path $CacheRoot "downloads"
+    New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
+    $archiveName = "$nodeFolderName.zip"
+    $archivePath = Join-Path $downloadRoot $archiveName
+    $downloadUrls = @(
+        "https://nodejs.org/dist/v$PortableNodeVersion/$archiveName",
+        "https://npmmirror.com/mirrors/node/v$PortableNodeVersion/$archiveName"
+    )
+    $downloaded = $false
+    foreach ($url in $downloadUrls) {
+        Write-Note "下载便携版 Node.js x64：$url"
+        if (Invoke-DownloadFile $url $archivePath) {
+            $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ceq $PortableNodeSha256) {
+                $downloaded = $true
+                break
+            }
+            Write-Host "下载的 Node.js 文件校验失败，将尝试下一个下载源。" -ForegroundColor Yellow
+            Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if (-not $downloaded) { throw "便携版 Node.js x64 下载失败，请检查网络后重试。" }
+
+    $nonce = [guid]::NewGuid().ToString("N").Substring(0, 8)
+    $extractRoot = Join-Path $script:WranglerToolsRoot "$nodeFolderName-install-$PID-$nonce"
+    Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot -Force
+    $portableRoot = Join-Path $extractRoot $nodeFolderName
+    $portableNode = Join-Path $portableRoot "node.exe"
+    $portableNpm = Join-Path $portableRoot "npm.cmd"
+    if (-not (Test-Path -LiteralPath $portableNode -PathType Leaf) -or -not (Test-Path -LiteralPath $portableNpm -PathType Leaf)) {
+        throw "便携版 Node.js x64 解压后文件不完整。"
+    }
+    $global:LASTEXITCODE = 0
+    $portableArch = & $portableNode -p "process.arch" 2>&1 | Out-String -Width 4096
+    if ($LASTEXITCODE -ne 0 -or $portableArch.Trim() -ne "x64") {
+        throw "当前 Windows ARM64 环境无法运行 Node.js x64 兼容程序：$portableArch"
+    }
+    $script:NodeCommand = $portableNode
+    $script:Npm = $portableNpm
+    Write-Note "便携版 Node.js x64 已准备完成，不会修改系统 Node.js。"
+}
 function Get-WranglerCommand([string[]]$SubCommands) {
-    return @("node", $script:WranglerCliPath) + $SubCommands
+    return @($script:NodeCommand, $script:WranglerCliPath) + $SubCommands
 }
 function Test-WranglerCli([string]$CliPath) {
     if (-not (Test-Path -LiteralPath $CliPath -PathType Leaf)) { return $false }
     try {
         $global:LASTEXITCODE = 0
-        $versionOutput = & node $CliPath --version 2>&1 | Out-String -Width 4096
+        $versionOutput = & $script:NodeCommand $CliPath --version 2>&1 | Out-String -Width 4096
         if ($LASTEXITCODE -ne 0) { return $false }
         return $versionOutput.Trim() -eq $WranglerVersion
     } catch {
@@ -480,14 +553,14 @@ function Invoke-CommandLineVisible([string[]]$Command, [string]$WorkingDirectory
 function Invoke-WranglerDeploy([string]$WorkerRoot, [string]$WorkerName) {
     Push-Location $WorkerRoot
     try {
-        $commandText = "node `"$script:WranglerCliPath`" deploy"
+        $commandText = "`"$script:NodeCommand`" `"$script:WranglerCliPath`" deploy"
         $maxAttempts = 5
         $transientPattern = '(?i)fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR_|socket hang up'
         for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             Write-Note "运行: $commandText"
             $deployOutput = @()
             $global:LASTEXITCODE = 0
-            & node $script:WranglerCliPath deploy 2>&1 | Tee-Object -Variable deployOutput | Out-Host
+            & $script:NodeCommand $script:WranglerCliPath deploy 2>&1 | Tee-Object -Variable deployOutput | Out-Host
             $exitCode = $LASTEXITCODE
             if ($exitCode -eq 0) { return }
             if ($exitCode -eq -1073740791) {
@@ -789,7 +862,10 @@ Write-Step "环境预检"
 foreach ($cmd in @("node", $Npm)) {
     if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) { throw "找不到命令 $cmd，请先安装 Node.js 20+。" }
 }
-if (-not $PreflightOnly) { Initialize-Wrangler }
+if (-not $PreflightOnly) {
+    Initialize-WranglerNodeRuntime
+    Initialize-Wrangler
+}
 Invoke-InteractiveSetup $Config
 $adminToken = Get-ConfigValue $Config "adminToken" ""
 if (-not $Interactive -and $env:ZJMF_ADMIN_TOKEN) { $adminToken = $env:ZJMF_ADMIN_TOKEN }
@@ -819,7 +895,7 @@ Write-Host "  配置文件 : $ConfigPath"
 Ensure-CloudflareAuth $Config
 
 Write-Step "创建或复用 D1，并写入 wrangler.toml"
-Invoke-CommandLine @("node", (Join-Path $workerRoot "scripts\prepare-cloudflare.mjs")) $workerRoot | Write-Host
+Invoke-CommandLine @($script:NodeCommand, (Join-Path $workerRoot "scripts\prepare-cloudflare.mjs")) $workerRoot | Write-Host
 if ($PrepareOnly) { Write-Host "已完成预生成，未正式部署。" -ForegroundColor Green; Complete-DeploymentLog; exit 0 }
 
 Write-Step "执行 D1 迁移"
