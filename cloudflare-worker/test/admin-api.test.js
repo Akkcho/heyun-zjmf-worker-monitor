@@ -571,9 +571,16 @@ test('管理概览返回配置但不回显 IDC 密码', async () => {
   assert.doesNotMatch(text, /pushplus-secret|203\.0\.113\.10|28817567790/);
 });
 
-test('测试魔方产品列表时可复用已有 IDC 密码，但不回传到概览', async () => {
+test('测试已有 IDC 时忽略浏览器自动填入的账号和密码', async () => {
   const calls = [];
   const testEnv = env({
+    providers: [{
+      name: 'heyunidc',
+      display_name: '核云',
+      api_base_url: 'https://api.example/v1',
+      api_account: 'acct',
+      api_password: 'provider-secret',
+    }],
     fetcher: async (url) => {
       calls.push(String(url));
       if (String(url).includes('login_api')) return new Response(JSON.stringify({ jwt: 'jwt-1' }));
@@ -583,7 +590,12 @@ test('测试魔方产品列表时可复用已有 IDC 密码，但不回传到概
   const res = await handleRequest(new Request('https://worker.example/api/admin/zjmf/hosts', {
     method: 'POST',
     headers: { authorization: 'Bearer admin-password', 'content-type': 'application/json; charset=utf-8' },
-    body: JSON.stringify({ name: 'heyunidc', api_base_url: 'https://api.example/v1', api_account: 'acct' }),
+    body: JSON.stringify({
+      name: 'heyunidc',
+      api_base_url: 'https://api.example/v1',
+      api_account: 'browser-autofilled-account',
+      api_password: 'browser-autofilled-password',
+    }),
   }), testEnv);
   const data = await res.json();
 

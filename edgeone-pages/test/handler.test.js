@@ -112,7 +112,7 @@ test('EdgeOne TCP 连接器不依赖 Node 原生模块', async () => {
   );
 });
 
-test('EdgeOne 测试产品列表时可复用已有 IDC 密码，但不回显到概览', async () => {
+test('EdgeOne 测试已有 IDC 时忽略浏览器自动填入的账号和密码', async () => {
   const calls = [];
   const kv = new MemoryKV();
   const env = {
@@ -138,7 +138,12 @@ test('EdgeOne 测试产品列表时可复用已有 IDC 密码，但不回显到�
   const res = await handleEdgeOneRequest(new Request('https://edgeone.example/api/admin/zjmf/hosts', {
     method: 'POST',
     headers: { authorization: 'Bearer admin', 'content-type': 'application/json; charset=utf-8' },
-    body: JSON.stringify({ name: 'heyunidc', api_base_url: 'https://api.example/v1', api_account: 'acct' }),
+    body: JSON.stringify({
+      name: 'heyunidc',
+      api_base_url: 'https://api.example/v1',
+      api_account: 'browser-autofilled-account',
+      api_password: 'browser-autofilled-password',
+    }),
   }), env);
   const data = await res.json();
 

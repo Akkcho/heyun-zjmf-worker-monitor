@@ -337,10 +337,10 @@ export async function handleRequest(request, env) {
     const body = await readJson(request);
     const existing = body?.name ? await repo.getProvider(String(body.name)) : null;
     const apiBaseUrl = body?.api_base_url || existing?.api_base_url;
-    const apiAccount = body?.api_account && !isRedactedAccount(body.api_account)
+    const apiAccount = existing?.api_account || (body?.api_account && !isRedactedAccount(body.api_account)
       ? body.api_account
-      : existing?.api_account;
-    const apiPassword = body?.api_password || existing?.api_password;
+      : null);
+    const apiPassword = existing?.api_password || body?.api_password;
     if (!apiBaseUrl || !apiAccount || !apiPassword) {
       return json({ error: 'INVALID_PROVIDER' }, 400);
     }
